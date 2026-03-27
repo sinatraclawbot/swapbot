@@ -1,11 +1,12 @@
 import os
-import psycopg2
 import asyncio
+import psycopg2
 from telethon import TelegramClient
-from telethon.tl.functions.channels import CreateChannelRequest, ExportInviteRequest
+from telethon.tl.functions.channels import CreateChannelRequest
+from telethon.tl.functions.messages import ExportChatInviteRequest
 
-api_id = int(os.getenv("API_ID"))
-api_hash = os.getenv("API_HASH")
+api_id = int(os.getenv("TG_API_ID"))
+api_hash = os.getenv("TG_API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 client = TelegramClient("swapbot_session", api_id, api_hash)
@@ -26,14 +27,22 @@ async def create_group(order_id):
 
     channel = result.chats[0]
 
-    invite = await client(ExportInviteRequest(channel))
+    invite = await client(ExportChatInviteRequest(
+        peer=channel
+    ))
     invite_link = invite.link
 
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE orders SET invite_link=%s, tg_group_title=%s WHERE id=%s",
-        (invite_link, title, order_id),
+        """
+        UPDATE orders
+        SET invite_link = %s,
+            tg_group_title = %s,
+            tg_group_id = %s
+        WHERE id = %s
+        """,
+        (invite_link, title, channel.id, order_id),
     )
     conn.commit()
     cur.close()
@@ -43,5 +52,5 @@ async def create_group(order_id):
 
 
 def create_order_group(order_id):
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(create_group(order_id))
+    with client:
+        return client.loop.run_until_complete(create_group(order_id))
