@@ -8,7 +8,7 @@ from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from group_worker import create_order_group, client
+from group_worker import create_order_group
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -146,7 +146,10 @@ def get_profile(message):
 
     except Exception as e:
         print("GET_PROFILE ERROR:", e)
-        bot.send_message(message.chat.id, f"Ошибка: {e}")
+        try:
+            bot.send_message(message.chat.id, f"Ошибка: {e}")
+        except Exception as send_err:
+            print("SEND ERROR IN GET_PROFILE:", send_err)
 
 
 def send_order_to_masters(order_id, data):
@@ -224,8 +227,7 @@ def accept_order(call):
     conn.close()
 
     try:
-        with client:
-            invite_link = client.loop.run_until_complete(create_order_group(order_id))
+        invite_link = create_order_group(order_id)
     except Exception as e:
         print("GROUP CREATE ERROR:", e)
 
