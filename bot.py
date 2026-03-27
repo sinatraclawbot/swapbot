@@ -1,5 +1,4 @@
 import os
-import time
 import telebot
 import psycopg2
 from telebot.types import (
@@ -29,16 +28,22 @@ def main_menu():
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.send_message(
-        message.chat.id,
-        "Привет. Нажмите 'Создать заявку'",
-        reply_markup=main_menu(),
-    )
+    try:
+        bot.send_message(
+            message.chat.id,
+            "Привет. Нажмите 'Создать заявку'",
+            reply_markup=main_menu(),
+        )
+    except Exception as e:
+        print("START ERROR:", e)
 
 
 @bot.message_handler(commands=["id"])
 def get_id(message):
-    bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
+    try:
+        bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
+    except Exception as e:
+        print("ID ERROR:", e)
 
 
 @bot.message_handler(func=lambda message: message.text == "Создать заявку")
@@ -182,8 +187,9 @@ def send_order_to_masters(order_id, data):
         telegram_id = master[0]
         try:
             bot.send_message(telegram_id, text, reply_markup=kb)
+            print(f"ORDER SENT TO MASTER: {telegram_id}")
         except Exception as e:
-            print(f"Не удалось отправить мастеру {telegram_id}: {e}")
+            print(f"SEND ORDER ERROR TO MASTER {telegram_id}: {e}")
 
     cur.close()
     conn.close()
@@ -288,11 +294,10 @@ def accept_order(call):
         print("CALLBACK ERROR:", e)
 
 
-print("Bot started...")
+def main():
+    print("Bot started...")
+    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
 
-while True:
-    try:
-        bot.infinity_polling(timeout=30, long_polling_timeout=30)
-    except Exception as e:
-        print("POLLING CRASH:", e)
-        time.sleep(5)
+
+if __name__ == "__main__":
+    main()
