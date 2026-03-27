@@ -9,7 +9,11 @@ api_id = int(os.getenv("TG_API_ID"))
 api_hash = os.getenv("TG_API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-client = TelegramClient("swapbot_session", api_id, api_hash)
+client = TelegramClient(
+    "/opt/render/project/src/swapbot_session",
+    api_id,
+    api_hash
+)
 
 
 def get_conn():
@@ -27,9 +31,7 @@ async def create_group(order_id):
 
     channel = result.chats[0]
 
-    invite = await client(ExportChatInviteRequest(
-        peer=channel
-    ))
+    invite = await client(ExportChatInviteRequest(channel))
     invite_link = invite.link
 
     conn = get_conn()
