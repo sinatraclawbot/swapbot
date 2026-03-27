@@ -1,7 +1,13 @@
 import os
 import telebot
 import psycopg2
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+from group_worker import create_order_group, client
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -20,16 +26,16 @@ def main_menu():
     return markup
 
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
         "Привет. Нажмите 'Создать заявку'",
-        reply_markup=main_menu()
+        reply_markup=main_menu(),
     )
 
 
-@bot.message_handler(commands=['id'])
+@bot.message_handler(commands=["id"])
 def get_id(message):
     bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
 
@@ -55,7 +61,10 @@ def get_price(message):
         bot.register_next_step_handler(msg, get_price)
         return
 
-    msg = bot.send_message(message.chat.id, "Введите контакт клиента (@username или номер):")
+    msg = bot.send_message(
+        message.chat.id,
+        "Введите контакт клиента (@username или номер):",
+    )
     bot.register_next_step_handler(msg, get_contact)
 
 
@@ -84,59 +93,72 @@ def get_time_to(message):
 
 
 def get_profile(message):
-    data = user_data[message.chat.id]
-    data["profile_name"] = message.text
+    try:
+        data = user_data[message.chat.id]
+        data["profile_name"] = message.text
 
-    conn = get_conn()
-    cur = conn.cursor()
+        conn = get_conn()
+        cur = conn.cursor()
 
-    cur.execute("""
-        INSERT INTO orders (
-            service_type,
-            price,
-            client_telegram_id,
-            client_username,
-            contact_text,
-            incall_outcall,
-            time_from,
-            time_to,
-            profile_name,
-            status
+        cur.execute(
+            """
+            INSERT INTO orders (
+                service_type,
+                price,
+                client_telegram_id,
+                client_username,
+                contact_text,
+                incall_outcall,
+                time_from,
+                time_to,
+                profile_name,
+                status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW')
+            RETURNING id
+            """,
+            (
+                data["service_type"],
+                data["price"],
+                message.chat.id,
+                message.from_user.username,
+                data["contact_text"],
+                data["incall_outcall"],
+                data["time_from"],
+                data["time_to"],
+                data["profile_name"],
+            ),
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW')
-        RETURNING id
-    """, (
-        data["service_type"],
-        data["price"],
-        message.chat.id,
-        message.from_user.username,
-        data["contact_text"],
-        data["incall_outcall"],
-        data["time_from"],
-        data["time_to"],
-        data["profile_name"]
-    ))
 
-    order_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
+        order_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    send_order_to_masters(order_id, data)
+        send_order_to_masters(order_id, data)
 
-    bot.send_message(message.chat.id, f"Заявка #{order_id} создана и отправлена мастерам.")
-    user_data.pop(message.chat.id, None)
+        bot.send_message(
+            message.chat.id,
+            f"Заявка #{order_id} создана и отправлена мастерам.",
+        )
+        user_data.pop(message.chat.id, None)
+
+    except Exception as e:
+        print("GET_PROFILE ERROR:", e)
+        bot.send_message(message.chat.id, f"Ошибка: {e}")
 
 
 def send_order_to_masters(order_id, data):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT telegram_id
         FROM masters
         WHERE is_active = TRUE AND is_online = TRUE
-    """)
+        """
+    )
     masters = cur.fetchall()
 
     text = f"""🆕 Новая заявка #{order_id}
@@ -171,39 +193,59 @@ def accept_order(call):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT status FROM orders WHERE id = %s", (order_id,))
+    cur.execute(
+        """
+        UPDATE orders
+        SET status = 'ASSIGNED',
+            master_telegram_id = %s
+        WHERE id = %s
+          AND status = 'NEW'
+        RETURNING client_telegram_id
+        """,
+        (master_id, order_id),
+    )
+
     row = cur.fetchone()
 
     if not row:
-        bot.answer_callback_query(call.id, "Заказ не найден")
-        cur.close()
-        conn.close()
-        return
-
-    status = row[0]
-
-    if status != "NEW":
-        bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
-        cur.close()
-        conn.close()
-        return
-
-    cur.execute("""
-        UPDATE orders
-        SET status = 'ASSIGNED', master_telegram_id = %s
-        WHERE id = %s AND status = 'NEW'
-    """, (master_id, order_id))
-
-    if cur.rowcount == 1:
-        conn.commit()
-        bot.answer_callback_query(call.id, "Заказ ваш")
-        bot.send_message(master_id, f"✅ Ты взял заказ #{order_id}")
-    else:
         conn.rollback()
+        cur.close()
+        conn.close()
         bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
+        return
 
+    client_id = row[0]
+    conn.commit()
     cur.close()
     conn.close()
+
+    try:
+        with client:
+            invite_link = client.loop.run_until_complete(create_order_group(order_id))
+    except Exception as e:
+        print("GROUP CREATE ERROR:", e)
+        bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+        bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+        bot.answer_callback_query(call.id, "Ошибка создания чата")
+        return
+
+    if not invite_link:
+        bot.send_message(master_id, f"❌ Не удалось создать чат для заказа #{order_id}")
+        bot.send_message(client_id, f"❌ Не удалось создать чат для заказа #{order_id}")
+        bot.answer_callback_query(call.id, "Ошибка создания чата")
+        return
+
+    bot.send_message(
+        client_id,
+        f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
+    )
+
+    bot.send_message(
+        master_id,
+        f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
+    )
+
+    bot.answer_callback_query(call.id, "Заказ ваш")
 
 
 print("Bot started...")
