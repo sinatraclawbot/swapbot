@@ -16,3 +16,6 @@ bot.polling()
 @bot.message_handler(commands=['id'])
 def get_id(message):
     bot.send_message(message.chat.id, f"Ваш ID: {message.chat.id}")
+    @bot.message_handler(commands=['id'])
+def get_id(message):
+    bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
