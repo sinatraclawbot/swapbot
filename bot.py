@@ -1,18 +1,33 @@
 import os
 import telebot
 import psycopg2
+from flask import Flask, request
 from telebot.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    Update,
 )
 from group_worker import create_order_group
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
+if not RENDER_EXTERNAL_URL:
+    raise RuntimeError("RENDER_EXTERNAL_URL is not set")
+
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{TOKEN}"
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 user_data = {}
 
 
@@ -294,10 +309,34 @@ def accept_order(call):
         print("CALLBACK ERROR:", e)
 
 
-def main():
-    print("Bot started...")
-    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+@app.get("/")
+def healthcheck():
+    return "ok", 200
 
+
+@app.post(f"/webhook/{TOKEN}")
+def telegram_webhook():
+    try:
+        json_str = request.get_data().decode("utf-8")
+        update = Update.de_json(json_str)
+        bot.process_new_updates([update])
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
+    return "ok", 200
+
+
+def setup_webhook():
+    try:
+        bot.remove_webhook()
+        result = bot.set_webhook(url=WEBHOOK_URL)
+        print(f"Webhook set: {result} -> {WEBHOOK_URL}")
+    except Exception as e:
+        print("SET WEBHOOK ERROR:", e)
+
+
+setup_webhook()
 
 if __name__ == "__main__":
-    main()
+    port = int(os.getenv("PORT", "10000"))
+    print(f"Bot webhook server started on port {port}")
+    app.run(host="0.0.0.0", port=port)
