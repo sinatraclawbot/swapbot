@@ -1,4 +1,5 @@
 import os
+import time
 import telebot
 import psycopg2
 from telebot.types import (
@@ -211,7 +212,10 @@ def accept_order(call):
         conn.rollback()
         cur.close()
         conn.close()
-        bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
+        try:
+            bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
+        except Exception as e:
+            print("CALLBACK ERROR:", e)
         return
 
     client_id = row[0]
@@ -224,29 +228,69 @@ def accept_order(call):
             invite_link = client.loop.run_until_complete(create_order_group(order_id))
     except Exception as e:
         print("GROUP CREATE ERROR:", e)
-        bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
-        bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
-        bot.answer_callback_query(call.id, "Ошибка создания чата")
+
+        try:
+            bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+        except Exception as send_err:
+            print("SEND TO MASTER ERROR:", send_err)
+
+        try:
+            bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+        except Exception as send_err:
+            print("SEND TO CLIENT ERROR:", send_err)
+
+        try:
+            bot.answer_callback_query(call.id, "Ошибка создания чата")
+        except Exception as callback_err:
+            print("CALLBACK ERROR:", callback_err)
+
         return
 
     if not invite_link:
-        bot.send_message(master_id, f"❌ Не удалось создать чат для заказа #{order_id}")
-        bot.send_message(client_id, f"❌ Не удалось создать чат для заказа #{order_id}")
-        bot.answer_callback_query(call.id, "Ошибка создания чата")
+        try:
+            bot.send_message(master_id, f"❌ Не удалось создать чат для заказа #{order_id}")
+        except Exception as send_err:
+            print("SEND TO MASTER ERROR:", send_err)
+
+        try:
+            bot.send_message(client_id, f"❌ Не удалось создать чат для заказа #{order_id}")
+        except Exception as send_err:
+            print("SEND TO CLIENT ERROR:", send_err)
+
+        try:
+            bot.answer_callback_query(call.id, "Ошибка создания чата")
+        except Exception as callback_err:
+            print("CALLBACK ERROR:", callback_err)
+
         return
 
-    bot.send_message(
-        client_id,
-        f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
-    )
+    try:
+        bot.send_message(
+            client_id,
+            f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
+        )
+    except Exception as e:
+        print("SEND TO CLIENT ERROR:", e)
 
-    bot.send_message(
-        master_id,
-        f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
-    )
+    try:
+        bot.send_message(
+            master_id,
+            f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
+        )
+    except Exception as e:
+        print("SEND TO MASTER ERROR:", e)
 
-    bot.answer_callback_query(call.id, "Заказ ваш")
+    try:
+        bot.answer_callback_query(call.id, "Заказ ваш")
+    except Exception as e:
+        print("CALLBACK ERROR:", e)
 
 
 print("Bot started...")
-bot.infinity_polling()
+
+while True:
+    try:
+        bot.infinity_polling(timeout=30, long_polling_timeout=30)
+    except Exception as e:
+        print("POLLING CRASH:", e)
+        time.sleep(5)
