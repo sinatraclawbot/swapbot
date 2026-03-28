@@ -280,6 +280,7 @@ def accept_order(call):
 
     try:
         invite_link, group_chat_id = create_order_group(order_id)
+        group_chat_id = int(f"-100{group_chat_id}")
         log("GROUP CREATED", invite_link, group_chat_id)
     except Exception as e:
         log("GROUP CREATE ERROR", repr(e))
@@ -357,6 +358,8 @@ def mark_paid(call):
     conn.close()
 
     group_chat_id = row[0] if row else None
+    if group_chat_id and not str(group_chat_id).startswith("-100"):
+        group_chat_id = int(f"-100{group_chat_id}")
 
     try:
         bot.answer_callback_query(call.id, "Оплата отмечена")
@@ -411,6 +414,9 @@ def mark_done(call):
     group_chat_id = row[0] if row else None
     payment_status = row[1] if row else "PAID"
 
+    if group_chat_id and not str(group_chat_id).startswith("-100"):
+        group_chat_id = int(f"-100{group_chat_id}")
+
     try:
         bot.answer_callback_query(call.id, "Заказ завершён")
     except Exception as e:
@@ -459,6 +465,8 @@ def mark_dispute(call):
     conn.close()
 
     group_chat_id = row[0] if row else None
+    if group_chat_id and not str(group_chat_id).startswith("-100"):
+        group_chat_id = int(f"-100{group_chat_id}")
 
     try:
         bot.answer_callback_query(call.id, "Открыт спор")
