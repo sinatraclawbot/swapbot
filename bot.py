@@ -2,12 +2,7 @@ import os
 import telebot
 import psycopg2
 from flask import Flask, request
-from telebot.types import (
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from group_worker import create_order_group
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -16,10 +11,8 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
-
 if not RENDER_EXTERNAL_URL:
     raise RuntimeError("RENDER_EXTERNAL_URL is not set")
 
@@ -28,6 +21,10 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
+
+
+def log(*args):
+    print(*args, flush=True)
 
 
 def get_conn():
@@ -42,31 +39,31 @@ def main_menu():
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    print("START HANDLER FIRED", message.chat.id, message.text)
+    log("START HANDLER FIRED", message.chat.id, repr(message.text))
     try:
         bot.send_message(
             message.chat.id,
             "Привет. Нажмите 'Создать заявку'",
             reply_markup=main_menu(),
         )
-        print("START MESSAGE SENT")
+        log("START MESSAGE SENT")
     except Exception as e:
-        print("START ERROR:", repr(e))
+        log("START ERROR", repr(e))
 
 
 @bot.message_handler(commands=["id"])
 def get_id(message):
-    print("ID HANDLER FIRED", message.chat.id, message.text)
+    log("ID HANDLER FIRED", message.chat.id, repr(message.text))
     try:
         bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
-        print("ID MESSAGE SENT")
+        log("ID MESSAGE SENT")
     except Exception as e:
-        print("ID ERROR:", repr(e))
+        log("ID ERROR", repr(e))
 
 
 @bot.message_handler(func=lambda message: message.text == "Создать заявку")
 def create_order(message):
-    print("CREATE ORDER HANDLER FIRED", message.chat.id)
+    log("CREATE ORDER HANDLER FIRED", message.chat.id)
     user_data[message.chat.id] = {}
     msg = bot.send_message(message.chat.id, "Введите вид услуги:")
     bot.register_next_step_handler(msg, get_service)
@@ -86,10 +83,7 @@ def get_price(message):
         bot.register_next_step_handler(msg, get_price)
         return
 
-    msg = bot.send_message(
-        message.chat.id,
-        "Введите контакт клиента (@username или номер):",
-    )
+    msg = bot.send_message(message.chat.id, "Введите контакт клиента (@username или номер):")
     bot.register_next_step_handler(msg, get_contact)
 
 
@@ -162,24 +156,21 @@ def get_profile(message):
 
         send_order_to_masters(order_id, data)
 
-        bot.send_message(
-            message.chat.id,
-            f"Заявка #{order_id} создана и отправлена мастерам.",
-        )
+        bot.send_message(message.chat.id, f"Заявка #{order_id} создана и отправлена мастерам.")
         user_data.pop(message.chat.id, None)
+        log("ORDER CREATED", order_id)
 
     except Exception as e:
-        print("GET_PROFILE ERROR:", repr(e))
+        log("GET_PROFILE ERROR", repr(e))
         try:
             bot.send_message(message.chat.id, f"Ошибка: {e}")
         except Exception as send_err:
-            print("SEND ERROR IN GET_PROFILE:", repr(send_err))
+            log("SEND ERROR IN GET_PROFILE", repr(send_err))
 
 
 def send_order_to_masters(order_id, data):
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute(
         """
         SELECT telegram_id
@@ -206,9 +197,9 @@ def send_order_to_masters(order_id, data):
         telegram_id = master[0]
         try:
             bot.send_message(telegram_id, text, reply_markup=kb)
-            print(f"ORDER SENT TO MASTER: {telegram_id}")
+            log("ORDER SENT TO MASTER", telegram_id)
         except Exception as e:
-            print(f"SEND ORDER ERROR TO MASTER {telegram_id}: {repr(e)}")
+            log("SEND ORDER ERROR TO MASTER", telegram_id, repr(e))
 
     cur.close()
     conn.close()
@@ -216,14 +207,12 @@ def send_order_to_masters(order_id, data):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
-    print("ACCEPT HANDLER FIRED", call.data, call.from_user.id)
-
+    log("ACCEPT HANDLER FIRED", call.data, call.from_user.id)
     order_id = int(call.data.split("_")[1])
     master_id = call.from_user.id
 
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute(
         """
         UPDATE orders
@@ -245,7 +234,7 @@ def accept_order(call):
         try:
             bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
         except Exception as e:
-            print("CALLBACK ERROR:", repr(e))
+            log("CALLBACK ERROR", repr(e))
         return
 
     client_id = row[0]
@@ -255,65 +244,37 @@ def accept_order(call):
 
     try:
         invite_link = create_order_group(order_id)
-        print("GROUP CREATED:", invite_link)
+        log("GROUP CREATED", invite_link)
     except Exception as e:
-        print("GROUP CREATE ERROR:", repr(e))
-
+        log("GROUP CREATE ERROR", repr(e))
         try:
             bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
         except Exception as send_err:
-            print("SEND TO MASTER ERROR:", repr(send_err))
-
+            log("SEND TO MASTER ERROR", repr(send_err))
         try:
             bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
         except Exception as send_err:
-            print("SEND TO CLIENT ERROR:", repr(send_err))
-
+            log("SEND TO CLIENT ERROR", repr(send_err))
         try:
             bot.answer_callback_query(call.id, "Ошибка создания чата")
         except Exception as callback_err:
-            print("CALLBACK ERROR:", repr(callback_err))
-
-        return
-
-    if not invite_link:
-        try:
-            bot.send_message(master_id, f"❌ Не удалось создать чат для заказа #{order_id}")
-        except Exception as send_err:
-            print("SEND TO MASTER ERROR:", repr(send_err))
-
-        try:
-            bot.send_message(client_id, f"❌ Не удалось создать чат для заказа #{order_id}")
-        except Exception as send_err:
-            print("SEND TO CLIENT ERROR:", repr(send_err))
-
-        try:
-            bot.answer_callback_query(call.id, "Ошибка создания чата")
-        except Exception as callback_err:
-            print("CALLBACK ERROR:", repr(callback_err))
-
+            log("CALLBACK ERROR", repr(callback_err))
         return
 
     try:
-        bot.send_message(
-            client_id,
-            f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
-        )
+        bot.send_message(client_id, f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}")
     except Exception as e:
-        print("SEND TO CLIENT ERROR:", repr(e))
+        log("SEND TO CLIENT ERROR", repr(e))
 
     try:
-        bot.send_message(
-            master_id,
-            f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
-        )
+        bot.send_message(master_id, f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}")
     except Exception as e:
-        print("SEND TO MASTER ERROR:", repr(e))
+        log("SEND TO MASTER ERROR", repr(e))
 
     try:
         bot.answer_callback_query(call.id, "Заказ ваш")
     except Exception as e:
-        print("CALLBACK ERROR:", repr(e))
+        log("CALLBACK ERROR", repr(e))
 
 
 @app.route("/", methods=["GET"])
@@ -325,16 +286,13 @@ def index():
 def webhook():
     try:
         json_str = request.get_data().decode("utf-8")
-        print("WEBHOOK HIT:", json_str)
-
+        log("WEBHOOK HIT RAW", json_str)
         update = telebot.types.Update.de_json(json_str)
-        print("UPDATE PARSED")
-
+        log("UPDATE PARSED", type(update).__name__)
         bot.process_new_updates([update])
-        print("UPDATE PROCESSED")
-
+        log("UPDATE PROCESSED")
     except Exception as e:
-        print("WEBHOOK ERROR:", repr(e))
+        log("WEBHOOK ERROR", repr(e))
     return "OK", 200
 
 
@@ -342,14 +300,14 @@ def setup_webhook():
     try:
         bot.remove_webhook()
         result = bot.set_webhook(url=WEBHOOK_URL)
-        print(f"Webhook set: {result} -> {WEBHOOK_URL}")
+        log("WEBHOOK SET", result, WEBHOOK_URL)
     except Exception as e:
-        print("SET WEBHOOK ERROR:", repr(e))
+        log("SET WEBHOOK ERROR", repr(e))
 
 
 setup_webhook()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
-    print(f"Bot webhook server started on port {port}")
-    app.run(host="0.0.0.0", port=port)
+    log("BOT WEBHOOK SERVER STARTED", port)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
