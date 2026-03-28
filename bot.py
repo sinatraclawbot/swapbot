@@ -51,7 +51,7 @@ def notify_admin(text: str):
 
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("Создать заявку"))
+    markup.add(KeyboardButton("Create Date"))
     return markup
 
 
@@ -61,26 +61,26 @@ def send_main_menu(chat_id: int, text: str):
 
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("💰 Оплачено", callback_data=f"paid_{order_id}"))
-    kb.add(InlineKeyboardButton("✅ Завершить", callback_data=f"done_{order_id}"))
-    kb.add(InlineKeyboardButton("⚠️ Спор", callback_data=f"dispute_{order_id}"))
+    kb.add(InlineKeyboardButton("💰 Paid", callback_data=f"paid_{order_id}"))
+    kb.add(InlineKeyboardButton("✅ Done", callback_data=f"done_{order_id}"))
+    kb.add(InlineKeyboardButton("⚠️ Dispute", callback_data=f"dispute_{order_id}"))
     return kb
 
 
 def build_group_status_text(order_id: int, order_status: str, payment_status: str):
-    return f"""📦 Заказ #{order_id}
+    return f"""📦 Date Request #{order_id}
 
-Статус: {order_status}
-Оплата: {payment_status}
+Order status: {order_status}
+Payment status: {payment_status}
 
-Используйте кнопки ниже:"""
+Use buttons below:"""
 
 
 @bot.message_handler(commands=["start"])
 def start(message):
     log("START HANDLER FIRED", message.chat.id, repr(message.text))
     try:
-        send_main_menu(message.chat.id, "Привет. Нажмите 'Создать заявку'")
+        send_main_menu(message.chat.id, "Welcome. Tap 'Create Date'")
         log("START MESSAGE SENT")
     except Exception as e:
         log("START ERROR", repr(e))
@@ -90,24 +90,36 @@ def start(message):
 def get_id(message):
     log("ID HANDLER FIRED", message.chat.id, repr(message.text))
     try:
-        bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
-        bot.send_message(message.chat.id, "Меню:", reply_markup=main_menu())
+        bot.send_message(message.chat.id, f"Your Telegram ID: {message.chat.id}")
+        bot.send_message(message.chat.id, "Menu:", reply_markup=main_menu())
         log("ID MESSAGE SENT")
     except Exception as e:
         log("ID ERROR", repr(e))
 
 
-@bot.message_handler(func=lambda message: message.text == "Создать заявку")
+@bot.message_handler(func=lambda message: message.text == "Create Date")
 def create_order(message):
-    log("CREATE ORDER HANDLER FIRED", message.chat.id)
+    log("CREATE DATE HANDLER FIRED", message.chat.id)
     user_data[message.chat.id] = {}
-    msg = bot.send_message(message.chat.id, "Введите вид услуги:")
-    bot.register_next_step_handler(msg, get_service)
+    msg = bot.send_message(message.chat.id, "Enter new date:")
+    bot.register_next_step_handler(msg, get_new_date)
 
 
-def get_service(message):
-    user_data[message.chat.id]["service_type"] = message.text
-    msg = bot.send_message(message.chat.id, "Введите цену в USDT:")
+def get_new_date(message):
+    user_data[message.chat.id]["new_date"] = message.text
+    msg = bot.send_message(message.chat.id, "Enter contact:")
+    bot.register_next_step_handler(msg, get_contact)
+
+
+def get_contact(message):
+    user_data[message.chat.id]["contact_text"] = message.text
+    msg = bot.send_message(message.chat.id, "Enter date type:")
+    bot.register_next_step_handler(msg, get_date_type)
+
+
+def get_date_type(message):
+    user_data[message.chat.id]["date_type"] = message.text
+    msg = bot.send_message(message.chat.id, "Enter price (USDT):")
     bot.register_next_step_handler(msg, get_price)
 
 
@@ -115,42 +127,33 @@ def get_price(message):
     try:
         user_data[message.chat.id]["price"] = int(message.text)
     except ValueError:
-        msg = bot.send_message(message.chat.id, "Введите цену числом, например 288")
+        msg = bot.send_message(message.chat.id, "Enter price as a number, for example 288")
         bot.register_next_step_handler(msg, get_price)
         return
 
-    msg = bot.send_message(
-        message.chat.id,
-        "Введите контакт клиента (@username или номер):",
-    )
-    bot.register_next_step_handler(msg, get_contact)
+    msg = bot.send_message(message.chat.id, "Enter format:")
+    bot.register_next_step_handler(msg, get_format_type)
 
 
-def get_contact(message):
-    user_data[message.chat.id]["contact_text"] = message.text
-    msg = bot.send_message(message.chat.id, "Формат: Incall или Outcall?")
-    bot.register_next_step_handler(msg, get_format)
-
-
-def get_format(message):
-    user_data[message.chat.id]["incall_outcall"] = message.text
-    msg = bot.send_message(message.chat.id, "Время от:")
+def get_format_type(message):
+    user_data[message.chat.id]["format_type"] = message.text
+    msg = bot.send_message(message.chat.id, "Enter time from:")
     bot.register_next_step_handler(msg, get_time_from)
 
 
 def get_time_from(message):
     user_data[message.chat.id]["time_from"] = message.text
-    msg = bot.send_message(message.chat.id, "Время до:")
+    msg = bot.send_message(message.chat.id, "Enter time to:")
     bot.register_next_step_handler(msg, get_time_to)
 
 
 def get_time_to(message):
     user_data[message.chat.id]["time_to"] = message.text
-    msg = bot.send_message(message.chat.id, "Профиль:")
-    bot.register_next_step_handler(msg, get_profile)
+    msg = bot.send_message(message.chat.id, "Enter profile:")
+    bot.register_next_step_handler(msg, save_order)
 
 
-def get_profile(message):
+def save_order(message):
     try:
         data = user_data[message.chat.id]
         data["profile_name"] = message.text
@@ -178,12 +181,12 @@ def get_profile(message):
             RETURNING id
             """,
             (
-                data["service_type"],
+                data["date_type"],
                 data["price"],
                 message.chat.id,
                 message.from_user.username,
                 data["contact_text"],
-                data["incall_outcall"],
+                data["format_type"],
                 data["time_from"],
                 data["time_to"],
                 data["profile_name"],
@@ -201,30 +204,31 @@ def get_profile(message):
 
         send_main_menu(
             message.chat.id,
-            f"Заявка #{order_id} создана и отправлена мастерам.",
+            f"Date request #{order_id} created and sent to masters.",
         )
         log("ORDER CREATED", order_id)
 
-        notify_admin(f"""🆕 Новая заявка #{order_id}
+        notify_admin(f"""🆕 New Date Request #{order_id}
 
-Услуга: {data['service_type']}
-Цена: {data['price']} USDT
-Клиент TG ID: {message.chat.id}
-Клиент username: @{message.from_user.username if message.from_user.username else 'нет'}
-Контакт: {data['contact_text']}
-Формат: {data['incall_outcall']}
-Время: {data['time_from']}-{data['time_to']}
-Профиль: {data['profile_name']}
+Client TG ID: {message.chat.id}
+Client username: @{message.from_user.username if message.from_user.username else 'none'}
+New date: {data['new_date']}
+Contact: {data['contact_text']}
+Date type: {data['date_type']}
+Price: {data['price']} USDT
+Format: {data['format_type']}
+Time: {data['time_from']}-{data['time_to']}
+Profile: {data['profile_name']}
 """)
 
     except Exception as e:
-        log("GET_PROFILE ERROR", repr(e))
-        notify_admin(f"❌ Ошибка создания заявки: {repr(e)}")
+        log("SAVE ORDER ERROR", repr(e))
+        notify_admin(f"❌ Error creating date request: {repr(e)}")
         user_data.pop(message.chat.id, None)
         try:
-            send_main_menu(message.chat.id, f"Ошибка: {e}")
+            send_main_menu(message.chat.id, f"Error: {e}")
         except Exception as send_err:
-            log("SEND ERROR IN GET_PROFILE", repr(send_err))
+            log("SEND ERROR IN SAVE ORDER", repr(send_err))
 
 
 def send_order_to_masters(order_id, data):
@@ -240,18 +244,19 @@ def send_order_to_masters(order_id, data):
     )
     masters = cur.fetchall()
 
-    text = f"""🆕 Новая заявка #{order_id}
+    text = f"""🆕 New Date Request #{order_id}
 
-Вид услуги: {data['service_type']}
-Цена: {data['price']} USDT
-Клиент: {data['contact_text']}
-Формат: {data['incall_outcall']}
-Время: {data['time_from']}-{data['time_to']}
-Профиль: {data['profile_name']}
+New date: {data['new_date']}
+Contact: {data['contact_text']}
+Date type: {data['date_type']}
+Price: {data['price']} USDT
+Format: {data['format_type']}
+Time: {data['time_from']}-{data['time_to']}
+Profile: {data['profile_name']}
 """
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ Принять", callback_data=f"accept_{order_id}"))
+    kb.add(InlineKeyboardButton("✅ Accept", callback_data=f"accept_{order_id}"))
 
     for master in masters:
         telegram_id = master[0]
@@ -260,6 +265,9 @@ def send_order_to_masters(order_id, data):
             log("ORDER SENT TO MASTER", telegram_id)
         except Exception as e:
             log("SEND ORDER ERROR TO MASTER", telegram_id, repr(e))
+            notify_admin(f"❌ Could not send request #{order_id} to master {telegram_id}: {repr(e)}")
+
+    notify_admin("📨 Date request sent to masters:\n\n" + text)
 
     cur.close()
     conn.close()
@@ -295,7 +303,7 @@ def accept_order(call):
         cur.close()
         conn.close()
         try:
-            bot.answer_callback_query(call.id, "Заказ уже забрал другой мастер")
+            bot.answer_callback_query(call.id, "This request was already taken")
         except Exception as e:
             log("CALLBACK ERROR", repr(e))
         return
@@ -309,7 +317,7 @@ def accept_order(call):
         invite_link, group_chat_id = create_order_group(order_id)
         group_chat_id = int(f"-100{group_chat_id}")
         log("GROUP CREATED", invite_link, group_chat_id)
-        notify_admin(f"""✅ Заказ #{order_id} принят
+        notify_admin(f"""✅ Date request #{order_id} accepted
 
 Master TG ID: {master_id}
 Client TG ID: {client_id}
@@ -318,20 +326,20 @@ Invite: {invite_link}
 """)
     except Exception as e:
         log("GROUP CREATE ERROR", repr(e))
-        notify_admin(f"❌ Ошибка создания группы для заказа #{order_id}: {repr(e)}")
+        notify_admin(f"❌ Error creating group for date request #{order_id}: {repr(e)}")
 
         try:
-            bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+            bot.send_message(master_id, f"❌ Error creating chat for request #{order_id}")
         except Exception as send_err:
             log("SEND TO MASTER ERROR", repr(send_err))
 
         try:
-            send_main_menu(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+            send_main_menu(client_id, f"❌ Error creating chat for request #{order_id}")
         except Exception as send_err:
             log("SEND TO CLIENT ERROR", repr(send_err))
 
         try:
-            bot.answer_callback_query(call.id, "Ошибка создания чата")
+            bot.answer_callback_query(call.id, "Error creating chat")
         except Exception as callback_err:
             log("CALLBACK ERROR", repr(callback_err))
 
@@ -340,20 +348,20 @@ Invite: {invite_link}
     try:
         send_main_menu(
             client_id,
-            f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
+            f"✅ Master accepted date request #{order_id}\nHere is your chat link:\n{invite_link}",
         )
     except Exception as e:
         log("SEND TO CLIENT ERROR", repr(e))
-        notify_admin(f"❌ Не удалось отправить invite клиенту по заказу #{order_id}: {repr(e)}")
+        notify_admin(f"❌ Could not send invite to client for request #{order_id}: {repr(e)}")
 
     try:
         bot.send_message(
             master_id,
-            f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
+            f"✅ Date request #{order_id} is yours\nHere is your chat link:\n{invite_link}",
         )
     except Exception as e:
         log("SEND TO MASTER ERROR", repr(e))
-        notify_admin(f"❌ Не удалось отправить invite мастеру по заказу #{order_id}: {repr(e)}")
+        notify_admin(f"❌ Could not send invite to master for request #{order_id}: {repr(e)}")
 
     try:
         bot.send_message(
@@ -362,13 +370,13 @@ Invite: {invite_link}
             reply_markup=order_group_keyboard(order_id),
         )
         log("GROUP STATUS CARD SENT", group_chat_id)
-        notify_admin(f"📨 Карточка статуса отправлена в группу заказа #{order_id}")
+        notify_admin(f"📨 Status card sent to group for request #{order_id}")
     except Exception as e:
         log("SEND STATUS CARD TO GROUP ERROR", repr(e))
-        notify_admin(f"❌ Не удалось отправить карточку в группу заказа #{order_id}: {repr(e)}")
+        notify_admin(f"❌ Could not send status card to group for request #{order_id}: {repr(e)}")
 
     try:
-        bot.answer_callback_query(call.id, "Заказ ваш")
+        bot.answer_callback_query(call.id, "Accepted")
     except Exception as e:
         log("CALLBACK ERROR", repr(e))
 
@@ -400,10 +408,10 @@ def mark_paid(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
 
-    notify_admin(f"💰 Заказ #{order_id}: отмечен как PAID")
+    notify_admin(f"💰 Date request #{order_id}: marked as PAID")
 
     try:
-        bot.answer_callback_query(call.id, "Оплата отмечена")
+        bot.answer_callback_query(call.id, "Payment marked as paid")
     except Exception as e:
         log("PAID CALLBACK ERROR", repr(e))
 
@@ -458,10 +466,10 @@ def mark_done(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
 
-    notify_admin(f"✅ Заказ #{order_id}: завершён")
+    notify_admin(f"✅ Date request #{order_id}: completed")
 
     try:
-        bot.answer_callback_query(call.id, "Заказ завершён")
+        bot.answer_callback_query(call.id, "Request completed")
     except Exception as e:
         log("DONE CALLBACK ERROR", repr(e))
 
@@ -511,10 +519,10 @@ def mark_dispute(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
 
-    notify_admin(f"⚠️ Заказ #{order_id}: открыт спор")
+    notify_admin(f"⚠️ Date request #{order_id}: dispute opened")
 
     try:
-        bot.answer_callback_query(call.id, "Открыт спор")
+        bot.answer_callback_query(call.id, "Dispute opened")
     except Exception as e:
         log("DISPUTE CALLBACK ERROR", repr(e))
 
@@ -564,17 +572,13 @@ def setup_webhook():
         bot.remove_webhook()
         result = bot.set_webhook(url=WEBHOOK_URL)
         log("WEBHOOK SET", result, WEBHOOK_URL)
-        notify_admin("✅ Swapbot перезапущен и webhook установлен")
+        notify_admin("✅ Swapbot restarted and webhook is set")
     except Exception as e:
         log("SET WEBHOOK ERROR", repr(e))
 
 
 setup_webhook()
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "10000"))
-    log("BOT WEBHOOK SERVER STARTED", port)
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     log("BOT WEBHOOK SERVER STARTED", port)
