@@ -52,6 +52,15 @@ def order_group_keyboard(order_id: int):
     return kb
 
 
+def build_group_status_text(order_id: int, order_status: str, payment_status: str):
+    return f"""📦 Заказ #{order_id}
+
+Статус: {order_status}
+Оплата: {payment_status}
+
+Используйте кнопки ниже:"""
+
+
 @bot.message_handler(commands=["start"])
 def start(message):
     log("START HANDLER FIRED", message.chat.id, repr(message.text))
@@ -270,8 +279,8 @@ def accept_order(call):
     conn.close()
 
     try:
-        invite_link = create_order_group(order_id)
-        log("GROUP CREATED", invite_link)
+        invite_link, group_chat_id = create_order_group(order_id)
+        log("GROUP CREATED", invite_link, group_chat_id)
     except Exception as e:
         log("GROUP CREATE ERROR", repr(e))
 
@@ -292,17 +301,6 @@ def accept_order(call):
 
         return
 
-    group_text = f"""📦 Заказ #{order_id}
-
-Статус: IN_CHAT
-Оплата: UNPAID
-
-Используйте кнопки ниже:
-💰 Оплачено
-✅ Завершить
-⚠️ Спор
-"""
-
     try:
         bot.send_message(
             client_id,
@@ -320,15 +318,14 @@ def accept_order(call):
         log("SEND TO MASTER ERROR", repr(e))
 
     try:
-        # Отдельно отправим мастеру карточку со статусами и кнопками.
-        # Позже можно вынести это прямо в группу через Telethon.
         bot.send_message(
-            master_id,
-            group_text,
+            group_chat_id,
+            build_group_status_text(order_id, "IN_CHAT", "UNPAID"),
             reply_markup=order_group_keyboard(order_id),
         )
+        log("GROUP STATUS CARD SENT", group_chat_id)
     except Exception as e:
-        log("SEND STATUS CARD ERROR", repr(e))
+        log("SEND STATUS CARD TO GROUP ERROR", repr(e))
 
     try:
         bot.answer_callback_query(call.id, "Заказ ваш")
@@ -343,17 +340,23 @@ def mark_paid(call):
 
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         UPDATE orders
         SET payment_status = 'PAID'
         WHERE id = %s
+        RETURNING tg_group_id
         """,
         (order_id,),
     )
+    row = cur.fetchone()
+
     conn.commit()
     cur.close()
     conn.close()
+
+    group_chat_id = row[0] if row else None
 
     try:
         bot.answer_callback_query(call.id, "Оплата отмечена")
@@ -364,20 +367,21 @@ def mark_paid(call):
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"""📦 Заказ #{order_id}
-
-Статус: IN_CHAT
-Оплата: PAID
-
-Используйте кнопки ниже:
-💰 Оплачено
-✅ Завершить
-⚠️ Спор
-""",
+            text=build_group_status_text(order_id, "IN_CHAT", "PAID"),
             reply_markup=order_group_keyboard(order_id),
         )
     except Exception as e:
         log("EDIT PAID CARD ERROR", repr(e))
+
+    if group_chat_id and group_chat_id != call.message.chat.id:
+        try:
+            bot.send_message(
+                group_chat_id,
+                build_group_status_text(order_id, "IN_CHAT", "PAID"),
+                reply_markup=order_group_keyboard(order_id),
+            )
+        except Exception as e:
+            log("SEND PAID CARD TO GROUP ERROR", repr(e))
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("done_"))
@@ -387,38 +391,47 @@ def mark_done(call):
 
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         UPDATE orders
         SET order_status = 'DONE',
             closed_at = NOW()
         WHERE id = %s
+        RETURNING tg_group_id, payment_status
         """,
         (order_id,),
     )
+    row = cur.fetchone()
+
     conn.commit()
     cur.close()
     conn.close()
+
+    group_chat_id = row[0] if row else None
+    payment_status = row[1] if row else "PAID"
 
     try:
         bot.answer_callback_query(call.id, "Заказ завершён")
     except Exception as e:
         log("DONE CALLBACK ERROR", repr(e))
 
+    final_text = build_group_status_text(order_id, "DONE", payment_status)
+
     try:
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"""📦 Заказ #{order_id}
-
-Статус: DONE
-Оплата: PAID
-
-Заказ завершён.
-""",
+            text=final_text,
         )
     except Exception as e:
         log("EDIT DONE CARD ERROR", repr(e))
+
+    if group_chat_id and group_chat_id != call.message.chat.id:
+        try:
+            bot.send_message(group_chat_id, final_text)
+        except Exception as e:
+            log("SEND DONE CARD TO GROUP ERROR", repr(e))
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dispute_"))
@@ -428,38 +441,46 @@ def mark_dispute(call):
 
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         UPDATE orders
         SET payment_status = 'DISPUTE',
             order_status = 'DISPUTE'
         WHERE id = %s
+        RETURNING tg_group_id
         """,
         (order_id,),
     )
+    row = cur.fetchone()
+
     conn.commit()
     cur.close()
     conn.close()
+
+    group_chat_id = row[0] if row else None
 
     try:
         bot.answer_callback_query(call.id, "Открыт спор")
     except Exception as e:
         log("DISPUTE CALLBACK ERROR", repr(e))
 
+    dispute_text = build_group_status_text(order_id, "DISPUTE", "DISPUTE")
+
     try:
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"""📦 Заказ #{order_id}
-
-Статус: DISPUTE
-Оплата: DISPUTE
-
-Открыт спор.
-""",
+            text=dispute_text,
         )
     except Exception as e:
         log("EDIT DISPUTE CARD ERROR", repr(e))
+
+    if group_chat_id and group_chat_id != call.message.chat.id:
+        try:
+            bot.send_message(group_chat_id, dispute_text)
+        except Exception as e:
+            log("SEND DISPUTE CARD TO GROUP ERROR", repr(e))
 
 
 @app.route("/", methods=["GET"])
