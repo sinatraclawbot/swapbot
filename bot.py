@@ -55,6 +55,10 @@ def main_menu():
     return markup
 
 
+def send_main_menu(chat_id: int, text: str):
+    bot.send_message(chat_id, text, reply_markup=main_menu())
+
+
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("💰 Оплачено", callback_data=f"paid_{order_id}"))
@@ -76,11 +80,7 @@ def build_group_status_text(order_id: int, order_status: str, payment_status: st
 def start(message):
     log("START HANDLER FIRED", message.chat.id, repr(message.text))
     try:
-        bot.send_message(
-            message.chat.id,
-            "Привет. Нажмите 'Создать заявку'",
-            reply_markup=main_menu(),
-        )
+        send_main_menu(message.chat.id, "Привет. Нажмите 'Создать заявку'")
         log("START MESSAGE SENT")
     except Exception as e:
         log("START ERROR", repr(e))
@@ -91,6 +91,7 @@ def get_id(message):
     log("ID HANDLER FIRED", message.chat.id, repr(message.text))
     try:
         bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.chat.id}")
+        bot.send_message(message.chat.id, "Меню:", reply_markup=main_menu())
         log("ID MESSAGE SENT")
     except Exception as e:
         log("ID ERROR", repr(e))
@@ -196,11 +197,12 @@ def get_profile(message):
 
         send_order_to_masters(order_id, data)
 
-        bot.send_message(
+        user_data.pop(message.chat.id, None)
+
+        send_main_menu(
             message.chat.id,
             f"Заявка #{order_id} создана и отправлена мастерам.",
         )
-        user_data.pop(message.chat.id, None)
         log("ORDER CREATED", order_id)
 
         notify_admin(f"""🆕 Новая заявка #{order_id}
@@ -218,8 +220,9 @@ def get_profile(message):
     except Exception as e:
         log("GET_PROFILE ERROR", repr(e))
         notify_admin(f"❌ Ошибка создания заявки: {repr(e)}")
+        user_data.pop(message.chat.id, None)
         try:
-            bot.send_message(message.chat.id, f"Ошибка: {e}")
+            send_main_menu(message.chat.id, f"Ошибка: {e}")
         except Exception as send_err:
             log("SEND ERROR IN GET_PROFILE", repr(send_err))
 
@@ -257,7 +260,6 @@ def send_order_to_masters(order_id, data):
             log("ORDER SENT TO MASTER", telegram_id)
         except Exception as e:
             log("SEND ORDER ERROR TO MASTER", telegram_id, repr(e))
-            notify_admin(f"❌ Не удалось отправить заказ #{order_id} мастеру {telegram_id}: {repr(e)}")
 
     cur.close()
     conn.close()
@@ -324,7 +326,7 @@ Invite: {invite_link}
             log("SEND TO MASTER ERROR", repr(send_err))
 
         try:
-            bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
+            send_main_menu(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
         except Exception as send_err:
             log("SEND TO CLIENT ERROR", repr(send_err))
 
@@ -336,7 +338,7 @@ Invite: {invite_link}
         return
 
     try:
-        bot.send_message(
+        send_main_menu(
             client_id,
             f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
         )
@@ -569,6 +571,10 @@ def setup_webhook():
 
 setup_webhook()
 
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+    log("BOT WEBHOOK SERVER STARTED", port)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     log("BOT WEBHOOK SERVER STARTED", port)
