@@ -9,50 +9,55 @@ api_id = int(os.getenv("TG_API_ID"))
 api_hash = os.getenv("TG_API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-client = TelegramClient(
-    "/opt/render/project/src/swapbot_session",
-    api_id,
-    api_hash
-)
+SESSION_NAME = "swapbot_session"
 
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
-async def create_group(order_id):
-    title = f"Order #{order_id}"
+async def create_group_async(order_id):
+    async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
 
-    result = await client(CreateChannelRequest(
-        title=title,
-        about="Chat between client and master",
-        megagroup=True
-    ))
+        title = f"Order #{order_id}"
 
-    channel = result.chats[0]
+        result = await client(CreateChannelRequest(
+            title=title,
+            about="Chat between client and master",
+            megagroup=True
+        ))
 
-    invite = await client(ExportChatInviteRequest(channel))
-    invite_link = invite.link
+        channel = result.chats[0]
 
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE orders
-        SET invite_link = %s,
-            tg_group_title = %s,
-            tg_group_id = %s
-        WHERE id = %s
-        """,
-        (invite_link, title, channel.id, order_id),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+        invite = await client(ExportChatInviteRequest(channel))
+        invite_link = invite.link
 
-    return invite_link
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            UPDATE orders
+            SET invite_link = %s,
+                tg_group_title = %s,
+                tg_group_id = %s
+            WHERE id = %s
+            """,
+            (invite_link, title, channel.id, order_id)
+        )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return invite_link
 
 
 def create_order_group(order_id):
-    with client:
-        return client.loop.run_until_complete(create_group(order_id))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(create_group_async(order_id))
+    finally:
+        loop.close()
