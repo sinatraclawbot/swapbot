@@ -5,10 +5,10 @@ from telethon import TelegramClient
 from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
 from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
 
-api_id = int(os.getenv("TG_API_ID"))
-api_hash = os.getenv("TG_API_HASH")
+TG_API_ID = int(os.getenv("TG_API_ID"))
+TG_API_HASH = os.getenv("TG_API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
-BOT_USERNAME = os.getenv("BOT_USERNAME")  # например Swapdatebot
+BOT_USERNAME = os.getenv("BOT_USERNAME")  # example: Swapdatebot
 
 SESSION_NAME = "/opt/render/project/src/swapbot_session"
 
@@ -18,7 +18,7 @@ def get_conn():
 
 
 async def create_group_async(order_id):
-    async with TelegramClient(SESSION_NAME, api_id, api_hash) as client:
+    async with TelegramClient(SESSION_NAME, TG_API_ID, TG_API_HASH) as client:
         conn = get_conn()
         cur = conn.cursor()
 
@@ -28,6 +28,7 @@ async def create_group_async(order_id):
                 service_type,
                 price,
                 client_username,
+                client_telegram_id,
                 contact_text,
                 incall_outcall,
                 time_from,
@@ -52,8 +53,9 @@ async def create_group_async(order_id):
             service_type,
             price,
             client_username,
+            client_telegram_id,
             contact_text,
-            incall_outcall,
+            format_type,
             time_from,
             time_to,
             profile_name,
@@ -62,45 +64,49 @@ async def create_group_async(order_id):
             order_status,
         ) = row
 
-        title = f"Order #{order_id}"
+        title = f"Date Request #{order_id}"
 
         result = await client(
             CreateChannelRequest(
                 title=title,
-                about=f"Private order chat #{order_id}",
+                about=f"Private chat for date request #{order_id}",
                 megagroup=True,
             )
         )
 
         channel = result.chats[0]
 
-        # Добавляем бота в группу
         if BOT_USERNAME:
             try:
                 bot_entity = await client.get_entity(BOT_USERNAME)
-                await client(InviteToChannelRequest(channel=channel, users=[bot_entity]))
+                await client(
+                    InviteToChannelRequest(
+                        channel=channel,
+                        users=[bot_entity],
+                    )
+                )
             except Exception as e:
                 print("ADD BOT TO GROUP ERROR:", repr(e), flush=True)
 
         invite = await client(ExportChatInviteRequest(channel))
         invite_link = invite.link
 
-        master_label = f"`{master_telegram_id}`" if master_telegram_id else "—"
-        client_label = f"@{client_username}" if client_username else contact_text
+        client_label = f"@{client_username}" if client_username else str(client_telegram_id)
+        master_label = str(master_telegram_id) if master_telegram_id else "—"
 
-        group_message = f"""📦 Заказ #{order_id}
+        group_message = f"""📦 Date Request #{order_id}
 
-Услуга: {service_type}
-Цена: {price} USDT
-Клиент: {client_label}
-Контакт: {contact_text}
-Формат: {incall_outcall}
-Время: {time_from}-{time_to}
-Профиль: {profile_name}
-Мастер ID: {master_label}
+Date type: {service_type}
+Price: {price} USDT
+Client: {client_label}
+Contact: {contact_text}
+Format: {format_type}
+Time: {time_from}-{time_to}
+Profile: {profile_name}
+Master ID: {master_label}
 
-Статус: {order_status}
-Оплата: {payment_status}
+Order status: {order_status}
+Payment status: {payment_status}
 """
 
         await client(
