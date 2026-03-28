@@ -2,12 +2,13 @@ import os
 import asyncio
 import psycopg2
 from telethon import TelegramClient
-from telethon.tl.functions.channels import CreateChannelRequest
+from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
 from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
 
 api_id = int(os.getenv("TG_API_ID"))
 api_hash = os.getenv("TG_API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
+BOT_USERNAME = os.getenv("BOT_USERNAME")  # например Swapdatebot
 
 SESSION_NAME = "/opt/render/project/src/swapbot_session"
 
@@ -73,6 +74,14 @@ async def create_group_async(order_id):
 
         channel = result.chats[0]
 
+        # Добавляем бота в группу
+        if BOT_USERNAME:
+            try:
+                bot_entity = await client.get_entity(BOT_USERNAME)
+                await client(InviteToChannelRequest(channel=channel, users=[bot_entity]))
+            except Exception as e:
+                print("ADD BOT TO GROUP ERROR:", repr(e), flush=True)
+
         invite = await client(ExportChatInviteRequest(channel))
         invite_link = invite.link
 
@@ -117,7 +126,7 @@ async def create_group_async(order_id):
         cur.close()
         conn.close()
 
-        return invite_link
+        return invite_link, channel.id
 
 
 def create_order_group(order_id):
