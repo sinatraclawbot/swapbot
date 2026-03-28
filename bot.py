@@ -13,6 +13,7 @@ from group_worker import create_order_group
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -36,6 +37,16 @@ def log(*args):
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
+
+
+def notify_admin(text: str):
+    if not ADMIN_CHANNEL_ID:
+        log("ADMIN CHANNEL NOT SET")
+        return
+    try:
+        bot.send_message(ADMIN_CHANNEL_ID, text)
+    except Exception as e:
+        log("ADMIN NOTIFY ERROR", repr(e))
 
 
 def main_menu():
@@ -192,8 +203,21 @@ def get_profile(message):
         user_data.pop(message.chat.id, None)
         log("ORDER CREATED", order_id)
 
+        notify_admin(f"""🆕 Новая заявка #{order_id}
+
+Услуга: {data['service_type']}
+Цена: {data['price']} USDT
+Клиент TG ID: {message.chat.id}
+Клиент username: @{message.from_user.username if message.from_user.username else 'нет'}
+Контакт: {data['contact_text']}
+Формат: {data['incall_outcall']}
+Время: {data['time_from']}-{data['time_to']}
+Профиль: {data['profile_name']}
+""")
+
     except Exception as e:
         log("GET_PROFILE ERROR", repr(e))
+        notify_admin(f"❌ Ошибка создания заявки: {repr(e)}")
         try:
             bot.send_message(message.chat.id, f"Ошибка: {e}")
         except Exception as send_err:
@@ -233,6 +257,7 @@ def send_order_to_masters(order_id, data):
             log("ORDER SENT TO MASTER", telegram_id)
         except Exception as e:
             log("SEND ORDER ERROR TO MASTER", telegram_id, repr(e))
+            notify_admin(f"❌ Не удалось отправить заказ #{order_id} мастеру {telegram_id}: {repr(e)}")
 
     cur.close()
     conn.close()
@@ -282,8 +307,16 @@ def accept_order(call):
         invite_link, group_chat_id = create_order_group(order_id)
         group_chat_id = int(f"-100{group_chat_id}")
         log("GROUP CREATED", invite_link, group_chat_id)
+        notify_admin(f"""✅ Заказ #{order_id} принят
+
+Master TG ID: {master_id}
+Client TG ID: {client_id}
+Group ID: {group_chat_id}
+Invite: {invite_link}
+""")
     except Exception as e:
         log("GROUP CREATE ERROR", repr(e))
+        notify_admin(f"❌ Ошибка создания группы для заказа #{order_id}: {repr(e)}")
 
         try:
             bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
@@ -309,6 +342,7 @@ def accept_order(call):
         )
     except Exception as e:
         log("SEND TO CLIENT ERROR", repr(e))
+        notify_admin(f"❌ Не удалось отправить invite клиенту по заказу #{order_id}: {repr(e)}")
 
     try:
         bot.send_message(
@@ -317,6 +351,7 @@ def accept_order(call):
         )
     except Exception as e:
         log("SEND TO MASTER ERROR", repr(e))
+        notify_admin(f"❌ Не удалось отправить invite мастеру по заказу #{order_id}: {repr(e)}")
 
     try:
         bot.send_message(
@@ -325,8 +360,10 @@ def accept_order(call):
             reply_markup=order_group_keyboard(order_id),
         )
         log("GROUP STATUS CARD SENT", group_chat_id)
+        notify_admin(f"📨 Карточка статуса отправлена в группу заказа #{order_id}")
     except Exception as e:
         log("SEND STATUS CARD TO GROUP ERROR", repr(e))
+        notify_admin(f"❌ Не удалось отправить карточку в группу заказа #{order_id}: {repr(e)}")
 
     try:
         bot.answer_callback_query(call.id, "Заказ ваш")
@@ -360,6 +397,8 @@ def mark_paid(call):
     group_chat_id = row[0] if row else None
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
+
+    notify_admin(f"💰 Заказ #{order_id}: отмечен как PAID")
 
     try:
         bot.answer_callback_query(call.id, "Оплата отмечена")
@@ -417,6 +456,8 @@ def mark_done(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
 
+    notify_admin(f"✅ Заказ #{order_id}: завершён")
+
     try:
         bot.answer_callback_query(call.id, "Заказ завершён")
     except Exception as e:
@@ -468,6 +509,8 @@ def mark_dispute(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
 
+    notify_admin(f"⚠️ Заказ #{order_id}: открыт спор")
+
     try:
         bot.answer_callback_query(call.id, "Открыт спор")
     except Exception as e:
@@ -510,6 +553,7 @@ def webhook():
 
     except Exception as e:
         log("WEBHOOK ERROR", repr(e))
+        notify_admin(f"❌ WEBHOOK ERROR: {repr(e)}")
     return "OK", 200
 
 
@@ -518,6 +562,7 @@ def setup_webhook():
         bot.remove_webhook()
         result = bot.set_webhook(url=WEBHOOK_URL)
         log("WEBHOOK SET", result, WEBHOOK_URL)
+        notify_admin("✅ Swapbot перезапущен и webhook установлен")
     except Exception as e:
         log("SET WEBHOOK ERROR", repr(e))
 
