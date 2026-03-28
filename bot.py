@@ -2,7 +2,12 @@ import os
 import telebot
 import psycopg2
 from flask import Flask, request
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from group_worker import create_order_group
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -11,8 +16,10 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
+
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
+
 if not RENDER_EXTERNAL_URL:
     raise RuntimeError("RENDER_EXTERNAL_URL is not set")
 
@@ -35,6 +42,14 @@ def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("Создать заявку"))
     return markup
+
+
+def order_group_keyboard(order_id: int):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("💰 Оплачено", callback_data=f"paid_{order_id}"))
+    kb.add(InlineKeyboardButton("✅ Завершить", callback_data=f"done_{order_id}"))
+    kb.add(InlineKeyboardButton("⚠️ Спор", callback_data=f"dispute_{order_id}"))
+    return kb
 
 
 @bot.message_handler(commands=["start"])
@@ -83,7 +98,10 @@ def get_price(message):
         bot.register_next_step_handler(msg, get_price)
         return
 
-    msg = bot.send_message(message.chat.id, "Введите контакт клиента (@username или номер):")
+    msg = bot.send_message(
+        message.chat.id,
+        "Введите контакт клиента (@username или номер):",
+    )
     bot.register_next_step_handler(msg, get_contact)
 
 
@@ -131,9 +149,11 @@ def get_profile(message):
                 time_from,
                 time_to,
                 profile_name,
-                status
+                status,
+                order_status,
+                payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'UNPAID')
             RETURNING id
             """,
             (
@@ -156,7 +176,10 @@ def get_profile(message):
 
         send_order_to_masters(order_id, data)
 
-        bot.send_message(message.chat.id, f"Заявка #{order_id} создана и отправлена мастерам.")
+        bot.send_message(
+            message.chat.id,
+            f"Заявка #{order_id} создана и отправлена мастерам.",
+        )
         user_data.pop(message.chat.id, None)
         log("ORDER CREATED", order_id)
 
@@ -171,6 +194,7 @@ def get_profile(message):
 def send_order_to_masters(order_id, data):
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         SELECT telegram_id
@@ -208,15 +232,18 @@ def send_order_to_masters(order_id, data):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
     log("ACCEPT HANDLER FIRED", call.data, call.from_user.id)
+
     order_id = int(call.data.split("_")[1])
     master_id = call.from_user.id
 
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         UPDATE orders
         SET status = 'ASSIGNED',
+            order_status = 'ASSIGNED',
             master_telegram_id = %s
         WHERE id = %s
           AND status = 'NEW'
@@ -247,34 +274,192 @@ def accept_order(call):
         log("GROUP CREATED", invite_link)
     except Exception as e:
         log("GROUP CREATE ERROR", repr(e))
+
         try:
             bot.send_message(master_id, f"❌ Ошибка создания чата для заказа #{order_id}")
         except Exception as send_err:
             log("SEND TO MASTER ERROR", repr(send_err))
+
         try:
             bot.send_message(client_id, f"❌ Ошибка создания чата для заказа #{order_id}")
         except Exception as send_err:
             log("SEND TO CLIENT ERROR", repr(send_err))
+
         try:
             bot.answer_callback_query(call.id, "Ошибка создания чата")
         except Exception as callback_err:
             log("CALLBACK ERROR", repr(callback_err))
+
         return
 
+    group_text = f"""📦 Заказ #{order_id}
+
+Статус: IN_CHAT
+Оплата: UNPAID
+
+Используйте кнопки ниже:
+💰 Оплачено
+✅ Завершить
+⚠️ Спор
+"""
+
     try:
-        bot.send_message(client_id, f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}")
+        bot.send_message(
+            client_id,
+            f"✅ Мастер принял заявку #{order_id}\nВот ссылка в чат:\n{invite_link}",
+        )
     except Exception as e:
         log("SEND TO CLIENT ERROR", repr(e))
 
     try:
-        bot.send_message(master_id, f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}")
+        bot.send_message(
+            master_id,
+            f"✅ Заказ #{order_id} ваш\nВот ссылка в чат:\n{invite_link}",
+        )
     except Exception as e:
         log("SEND TO MASTER ERROR", repr(e))
+
+    try:
+        # Отдельно отправим мастеру карточку со статусами и кнопками.
+        # Позже можно вынести это прямо в группу через Telethon.
+        bot.send_message(
+            master_id,
+            group_text,
+            reply_markup=order_group_keyboard(order_id),
+        )
+    except Exception as e:
+        log("SEND STATUS CARD ERROR", repr(e))
 
     try:
         bot.answer_callback_query(call.id, "Заказ ваш")
     except Exception as e:
         log("CALLBACK ERROR", repr(e))
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("paid_"))
+def mark_paid(call):
+    order_id = int(call.data.split("_")[1])
+    log("PAID HANDLER FIRED", order_id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE orders
+        SET payment_status = 'PAID'
+        WHERE id = %s
+        """,
+        (order_id,),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    try:
+        bot.answer_callback_query(call.id, "Оплата отмечена")
+    except Exception as e:
+        log("PAID CALLBACK ERROR", repr(e))
+
+    try:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"""📦 Заказ #{order_id}
+
+Статус: IN_CHAT
+Оплата: PAID
+
+Используйте кнопки ниже:
+💰 Оплачено
+✅ Завершить
+⚠️ Спор
+""",
+            reply_markup=order_group_keyboard(order_id),
+        )
+    except Exception as e:
+        log("EDIT PAID CARD ERROR", repr(e))
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("done_"))
+def mark_done(call):
+    order_id = int(call.data.split("_")[1])
+    log("DONE HANDLER FIRED", order_id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE orders
+        SET order_status = 'DONE',
+            closed_at = NOW()
+        WHERE id = %s
+        """,
+        (order_id,),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    try:
+        bot.answer_callback_query(call.id, "Заказ завершён")
+    except Exception as e:
+        log("DONE CALLBACK ERROR", repr(e))
+
+    try:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"""📦 Заказ #{order_id}
+
+Статус: DONE
+Оплата: PAID
+
+Заказ завершён.
+""",
+        )
+    except Exception as e:
+        log("EDIT DONE CARD ERROR", repr(e))
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dispute_"))
+def mark_dispute(call):
+    order_id = int(call.data.split("_")[1])
+    log("DISPUTE HANDLER FIRED", order_id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE orders
+        SET payment_status = 'DISPUTE',
+            order_status = 'DISPUTE'
+        WHERE id = %s
+        """,
+        (order_id,),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    try:
+        bot.answer_callback_query(call.id, "Открыт спор")
+    except Exception as e:
+        log("DISPUTE CALLBACK ERROR", repr(e))
+
+    try:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"""📦 Заказ #{order_id}
+
+Статус: DISPUTE
+Оплата: DISPUTE
+
+Открыт спор.
+""",
+        )
+    except Exception as e:
+        log("EDIT DISPUTE CARD ERROR", repr(e))
 
 
 @app.route("/", methods=["GET"])
@@ -287,10 +472,13 @@ def webhook():
     try:
         json_str = request.get_data().decode("utf-8")
         log("WEBHOOK HIT RAW", json_str)
+
         update = telebot.types.Update.de_json(json_str)
         log("UPDATE PARSED", type(update).__name__)
+
         bot.process_new_updates([update])
         log("UPDATE PROCESSED")
+
     except Exception as e:
         log("WEBHOOK ERROR", repr(e))
     return "OK", 200
