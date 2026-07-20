@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import telebot
 import psycopg2
 from flask import Flask, request
@@ -14,6 +15,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
+ADMIN_TELEGRAM_ID_RAW = os.getenv("ADMIN_TELEGRAM_ID")
+ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID_RAW) if ADMIN_TELEGRAM_ID_RAW else None
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -27,6 +30,7 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
+COMMISSION_RATE = Decimal("0.30")
 
 
 def log(*args):
@@ -35,6 +39,30 @@ def log(*args):
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
+
+
+def ensure_balance_schema():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            ALTER TABLE masters
+            ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2) NOT NULL DEFAULT 0
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE orders
+            ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(14, 2),
+            ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(14, 2),
+            ADD COLUMN IF NOT EXISTS master_balance_after NUMERIC(14, 2)
+            """
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
 def notify_admin(text: str):
@@ -48,9 +76,37 @@ def notify_admin(text: str):
         log("ADMIN NOTIFY ERROR", repr(e))
 
 
+def is_admin(user_id: int):
+    return ADMIN_TELEGRAM_ID is not None and user_id == ADMIN_TELEGRAM_ID
+
+
+def parse_admin_balance_command(message, command_name):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return None
+
+    parts = message.text.split()
+    if len(parts) != 3:
+        bot.send_message(message.chat.id, f"Usage: /{command_name} MASTER_ID AMOUNT")
+        return None
+
+    try:
+        master_id = int(parts[1])
+        amount = Decimal(parts[2].replace(",", ".")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    except (ValueError, InvalidOperation):
+        bot.send_message(message.chat.id, "MASTER_ID or AMOUNT is invalid")
+        return None
+
+    return master_id, amount
+
+
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("Create Date"))
+    markup.add(KeyboardButton("Wallet"))
     return markup
 
 
@@ -66,11 +122,27 @@ def order_group_keyboard(order_id: int):
     return kb
 
 
-def build_group_status_text(order_id: int, order_status: str, payment_status: str):
+def build_group_status_text(
+    order_id: int,
+    order_status: str,
+    payment_status: str,
+    paid_amount=None,
+    commission=None,
+    master_balance=None,
+):
+    payment_details = ""
+    if paid_amount is not None:
+        payment_details = f"""
+Total paid by client: {paid_amount} USDT
+Master fee (30%): {commission} USDT
+Master balance: {master_balance} USDT
+"""
+
     return f"""📦 Date Request #{order_id}
 
 Order status: {order_status}
 Payment status: {payment_status}
+{payment_details}
 
 Use buttons below:"""
 
@@ -117,6 +189,97 @@ def get_id(message):
         bot.send_message(message.chat.id, "Menu:", reply_markup=main_menu())
     except Exception as e:
         log("ID ERROR", repr(e))
+
+
+@bot.message_handler(commands=["balance"])
+@bot.message_handler(func=lambda message: message.text == "Wallet")
+def get_balance(message):
+    try:
+        parts = message.text.split()
+        target_id = message.from_user.id
+        if len(parts) == 2:
+            if not is_admin(message.from_user.id):
+                bot.send_message(message.chat.id, "Access denied")
+                return
+            target_id = int(parts[1])
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT balance FROM masters WHERE telegram_id = %s",
+            (target_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            bot.send_message(message.chat.id, "Master account not found")
+            return
+        if target_id == message.from_user.id:
+            bot.send_message(message.chat.id, f"Your balance: {row[0]} USDT")
+        else:
+            bot.send_message(message.chat.id, f"Master {target_id} balance: {row[0]} USDT")
+    except Exception as e:
+        log("BALANCE ERROR", repr(e))
+        notify_admin(f"❌ BALANCE ERROR: {repr(e)}")
+
+
+@bot.message_handler(commands=["setbalance"])
+def set_master_balance(message):
+    parsed = parse_admin_balance_command(message, "setbalance")
+    if not parsed:
+        return
+    master_id, amount = parsed
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE masters SET balance = %s WHERE telegram_id = %s RETURNING balance",
+            (amount, master_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            bot.send_message(message.chat.id, "Master account not found")
+            return
+        conn.commit()
+        bot.send_message(message.chat.id, f"Master {master_id} balance set to {row[0]} USDT")
+    finally:
+        cur.close()
+        conn.close()
+
+
+@bot.message_handler(commands=["addbalance"])
+def add_master_balance(message):
+    parsed = parse_admin_balance_command(message, "addbalance")
+    if not parsed:
+        return
+    master_id, amount = parsed
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE masters
+            SET balance = balance + %s
+            WHERE telegram_id = %s
+            RETURNING balance
+            """,
+            (amount, master_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            bot.send_message(message.chat.id, "Master account not found")
+            return
+        conn.commit()
+        bot.send_message(message.chat.id, f"Master {master_id} balance: {row[0]} USDT")
+    finally:
+        cur.close()
+        conn.close()
 
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
@@ -400,56 +563,161 @@ Invite: {invite_link}
 def mark_paid(call):
     try:
         order_id = int(call.data.split("_")[1])
+        master_id = call.from_user.id
 
         conn = get_conn()
         cur = conn.cursor()
 
         cur.execute(
             """
-            UPDATE orders
-            SET payment_status = 'PAID'
+            SELECT payment_status, master_telegram_id
+            FROM orders
             WHERE id = %s
-            RETURNING tg_group_id
+            """,
+            (order_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            bot.answer_callback_query(call.id, "Request not found")
+            return
+
+        payment_status, assigned_master_id = row
+        if assigned_master_id != master_id:
+            bot.answer_callback_query(call.id, "Only the assigned master can mark Paid")
+            return
+
+        if payment_status == "PAID":
+            bot.answer_callback_query(call.id, "Payment was already recorded")
+            return
+
+        msg = bot.send_message(
+            master_id,
+            f"Enter the total amount paid by the client for request #{order_id} (USDT):",
+        )
+        bot.register_next_step_handler(
+            msg,
+            save_paid_amount,
+            order_id,
+            call.message.chat.id,
+        )
+        bot.answer_callback_query(call.id, "Enter the total amount in private chat")
+
+    except Exception as e:
+        log("PAID ERROR", repr(e))
+        notify_admin(f"❌ PAID ERROR: {repr(e)}")
+
+
+def save_paid_amount(message, order_id, source_group_id):
+    try:
+        raw_amount = message.text.strip().replace(",", ".")
+        paid_amount = Decimal(raw_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if paid_amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, AttributeError):
+        msg = bot.send_message(message.chat.id, "Enter a positive amount, for example 288")
+        bot.register_next_step_handler(msg, save_paid_amount, order_id, source_group_id)
+        return
+
+    master_id = message.from_user.id
+    commission = (paid_amount * COMMISSION_RATE).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT payment_status, master_telegram_id, tg_group_id, order_status
+            FROM orders
+            WHERE id = %s
+            FOR UPDATE
             """,
             (order_id,),
         )
         row = cur.fetchone()
 
+        if not row:
+            conn.rollback()
+            bot.send_message(master_id, "Request not found")
+            return
+
+        payment_status, assigned_master_id, group_chat_id, order_status = row
+        if assigned_master_id != master_id:
+            conn.rollback()
+            bot.send_message(master_id, "You are not the assigned master for this request")
+            return
+
+        if payment_status == "PAID":
+            conn.rollback()
+            bot.send_message(master_id, "Payment was already recorded; balance was not charged again")
+            return
+
+        cur.execute(
+            """
+            UPDATE masters
+            SET balance = balance - %s
+            WHERE telegram_id = %s
+              AND is_active = TRUE
+            RETURNING balance
+            """,
+            (commission, master_id),
+        )
+        master_row = cur.fetchone()
+        if not master_row:
+            conn.rollback()
+            bot.send_message(master_id, "Active master account not found")
+            return
+
+        master_balance = master_row[0]
+        cur.execute(
+            """
+            UPDATE orders
+            SET payment_status = 'PAID',
+                paid_amount = %s,
+                commission_amount = %s,
+                master_balance_after = %s
+            WHERE id = %s
+            """,
+            (paid_amount, commission, master_balance, order_id),
+        )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         cur.close()
         conn.close()
 
-        group_chat_id = row[0] if row else None
-        if group_chat_id and not str(group_chat_id).startswith("-100"):
-            group_chat_id = int(f"-100{group_chat_id}")
+    if group_chat_id and not str(group_chat_id).startswith("-100"):
+        group_chat_id = int(f"-100{group_chat_id}")
 
-        notify_admin(f"💰 Date request #{order_id}: marked as PAID")
+    status_text = build_group_status_text(
+        order_id,
+        order_status or "IN_CHAT",
+        "PAID",
+    )
 
-        bot.answer_callback_query(call.id, "Payment marked as paid")
+    bot.send_message(
+        group_chat_id or source_group_id,
+        status_text,
+        reply_markup=order_group_keyboard(order_id),
+    )
+    bot.send_message(
+        master_id,
+        f"Payment saved. Fee charged: {commission} USDT. Balance: {master_balance} USDT",
+    )
 
-        try:
-            bot.edit_message_text(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                text=build_group_status_text(order_id, "IN_CHAT", "PAID"),
-                reply_markup=order_group_keyboard(order_id),
-            )
-        except Exception as e:
-            log("EDIT PAID CARD ERROR", repr(e))
-
-        if group_chat_id and group_chat_id != call.message.chat.id:
-            try:
-                bot.send_message(
-                    group_chat_id,
-                    build_group_status_text(order_id, "IN_CHAT", "PAID"),
-                    reply_markup=order_group_keyboard(order_id),
-                )
-            except Exception as e:
-                log("SEND PAID CARD TO GROUP ERROR", repr(e))
-
-    except Exception as e:
-        log("PAID ERROR", repr(e))
-        notify_admin(f"❌ PAID ERROR: {repr(e)}")
+    notify_admin(
+        f"💰 Date request #{order_id}: marked as PAID\n"
+        f"Total: {paid_amount} USDT\n"
+        f"Master fee (30%): {commission} USDT\n"
+        f"Master balance: {master_balance} USDT"
+    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("done_"))
@@ -588,6 +856,7 @@ def setup_webhook():
         log("SET WEBHOOK ERROR", repr(e))
 
 
+ensure_balance_schema()
 setup_webhook()
 
 if __name__ == "__main__":
