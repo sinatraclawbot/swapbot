@@ -282,6 +282,49 @@ def add_master_balance(message):
         conn.close()
 
 
+@bot.message_handler(commands=["balances"])
+def list_master_balances(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT telegram_id, balance, is_active, is_online
+            FROM masters
+            ORDER BY telegram_id
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        bot.send_message(message.chat.id, "No masters found")
+        return
+
+    lines = ["💼 Master balances:"]
+    for telegram_id, balance, is_active, is_online in rows:
+        status = "active" if is_active else "inactive"
+        online = "online" if is_online else "offline"
+        lines.append(f"{telegram_id}: {balance} USDT — {status}, {online}")
+
+    chunk = ""
+    for line in lines:
+        candidate = f"{chunk}\n{line}" if chunk else line
+        if len(candidate) > 3500:
+            bot.send_message(message.chat.id, chunk)
+            chunk = line
+        else:
+            chunk = candidate
+    if chunk:
+        bot.send_message(message.chat.id, chunk)
+
+
 @bot.message_handler(func=lambda message: message.text == "Create Date")
 def create_order(message):
     user_data[message.chat.id] = {}
