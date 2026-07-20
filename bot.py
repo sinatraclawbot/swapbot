@@ -206,7 +206,17 @@ def get_balance(message):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "SELECT balance FROM masters WHERE telegram_id = %s",
+            """
+            SELECT
+                m.balance,
+                COALESCE(SUM(o.paid_amount), 0) AS total_paid
+            FROM masters m
+            LEFT JOIN orders o
+              ON o.master_telegram_id = m.telegram_id
+             AND o.payment_status = 'PAID'
+            WHERE m.telegram_id = %s
+            GROUP BY m.telegram_id, m.balance
+            """,
             (target_id,),
         )
         row = cur.fetchone()
@@ -216,10 +226,17 @@ def get_balance(message):
         if not row:
             bot.send_message(message.chat.id, "Master account not found")
             return
+        balance, total_paid = row
         if target_id == message.from_user.id:
-            bot.send_message(message.chat.id, f"Your balance: {row[0]} USDT")
+            bot.send_message(
+                message.chat.id,
+                f"💼 Wallet\nBalance: {balance} USDT\nTotal paid: {total_paid} USDT",
+            )
         else:
-            bot.send_message(message.chat.id, f"Master {target_id} balance: {row[0]} USDT")
+            bot.send_message(
+                message.chat.id,
+                f"Master {target_id}\nBalance: {balance} USDT\nTotal paid: {total_paid} USDT",
+            )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
         notify_admin(f"❌ BALANCE ERROR: {repr(e)}")
