@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import telebot
 import psycopg2
@@ -907,17 +909,28 @@ def webhook():
     return "OK", 200
 
 
-def setup_webhook():
-    try:
-        bot.remove_webhook()
-        bot.set_webhook(url=WEBHOOK_URL)
-        notify_admin("✅ Swapbot restarted and webhook is set")
-    except Exception as e:
-        log("SET WEBHOOK ERROR", repr(e))
+def setup_webhook(max_attempts=12, retry_delay=10):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            bot.remove_webhook()
+            bot.set_webhook(url=WEBHOOK_URL)
+            log("WEBHOOK SET", f"attempt {attempt}")
+            notify_admin("✅ Swapbot restarted and webhook is set")
+            return
+        except Exception as e:
+            log(
+                "SET WEBHOOK ERROR",
+                f"attempt {attempt}/{max_attempts}",
+                repr(e),
+            )
+            if attempt < max_attempts:
+                time.sleep(retry_delay)
+
+    notify_admin("❌ Could not set webhook after repeated attempts")
 
 
 ensure_balance_schema()
-setup_webhook()
+threading.Thread(target=setup_webhook, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
