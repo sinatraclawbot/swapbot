@@ -2,15 +2,26 @@ import os
 import asyncio
 import psycopg2
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
 from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
 
-TG_API_ID = int(os.getenv("TG_API_ID"))
+TG_API_ID_RAW = os.getenv("TG_API_ID")
 TG_API_HASH = os.getenv("TG_API_HASH")
+TG_SESSION_STRING = os.getenv("TG_SESSION_STRING")
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_USERNAME = os.getenv("BOT_USERNAME")  # example: Swapdatebot
 
-SESSION_NAME = "/opt/render/project/src/swapbot_session"
+if not TG_API_ID_RAW:
+    raise RuntimeError("TG_API_ID is not set")
+if not TG_API_HASH:
+    raise RuntimeError("TG_API_HASH is not set")
+if not TG_SESSION_STRING:
+    raise RuntimeError("TG_SESSION_STRING is not set")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
+TG_API_ID = int(TG_API_ID_RAW)
 
 
 def get_conn():
@@ -18,7 +29,11 @@ def get_conn():
 
 
 async def create_group_async(order_id):
-    async with TelegramClient(SESSION_NAME, TG_API_ID, TG_API_HASH) as client:
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING),
+        TG_API_ID,
+        TG_API_HASH,
+    ) as client:
         conn = get_conn()
         cur = conn.cursor()
 
@@ -126,6 +141,22 @@ Payment status: {payment_status}
             WHERE id = %s
             """,
             (invite_link, title, channel.id, order_id),
+        )
+        cur.execute(
+            """
+            INSERT INTO order_status_history (
+                order_id, old_status, new_status, payment_status,
+                actor_telegram_id, actor_name
+            )
+            VALUES (%s, %s, 'IN_CHAT', %s, %s, %s)
+            """,
+            (
+                order_id,
+                order_status,
+                payment_status,
+                master_telegram_id,
+                "Telegram account",
+            ),
         )
 
         conn.commit()
