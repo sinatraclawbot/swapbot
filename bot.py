@@ -250,7 +250,6 @@ def send_main_menu(chat_id: int, text: str):
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("💰 Paid", callback_data=f"paid_{order_id}"))
-    kb.add(InlineKeyboardButton("✅ Done", callback_data=f"done_{order_id}"))
     kb.add(InlineKeyboardButton("⚠️ Dispute", callback_data=f"dispute_{order_id}"))
     return kb
 
@@ -346,7 +345,7 @@ def master_statistics(master_id, period):
             f"""
             SELECT
                 COUNT(*) FILTER (WHERE o.master_telegram_id IS NOT NULL),
-                COUNT(*) FILTER (WHERE o.order_status = 'DONE'),
+                COUNT(*) FILTER (WHERE o.payment_status = 'PAID'),
                 COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
                 COALESCE(AVG(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
                 COALESCE(m.balance, 0)
@@ -366,11 +365,11 @@ def master_statistics(master_id, period):
 
     if not row:
         return None, label
-    accepted, completed, revenue, average, balance = row
-    conversion = (Decimal(completed) * 100 / Decimal(accepted)) if accepted else Decimal("0")
+    accepted, paid_leads, revenue, average, balance = row
+    conversion = (Decimal(paid_leads) * 100 / Decimal(accepted)) if accepted else Decimal("0")
     return {
         "accepted": accepted,
-        "completed": completed,
+        "paid_leads": paid_leads,
         "conversion": conversion.quantize(Decimal("0.01")),
         "revenue": revenue,
         "average": average,
@@ -385,7 +384,7 @@ def master_statistics_text(master_id, period):
     return f"""📊 Master statistics — {label}
 
 Accepted Date: {stats['accepted']}
-Completed Date: {stats['completed']}
+Paid leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -733,7 +732,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
         InlineKeyboardButton("Masters", callback_data="adm_masters"),
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
-        InlineKeyboardButton("TOP Date", callback_data="adm_top_date"),
+        InlineKeyboardButton("TOP paid leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
@@ -842,7 +841,7 @@ def show_admin_master_card(call):
     text = f"""👤 Master {master_id}
 
 Accepted Date: {stats['accepted']}
-Completed Date: {stats['completed']}
+Paid leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -906,9 +905,9 @@ def show_admin_top(call):
         return
     ranking = call.data.rsplit("_", 1)[1]
     order_expression = {
-        "rev": "revenue DESC, completed DESC",
-        "date": "completed DESC, revenue DESC",
-        "conv": "conversion DESC, completed DESC",
+        "rev": "revenue DESC, paid_leads DESC",
+        "date": "paid_leads DESC, revenue DESC",
+        "conv": "conversion DESC, paid_leads DESC",
     }.get(ranking, "revenue DESC")
     conn = get_conn()
     cur = conn.cursor()
@@ -918,10 +917,10 @@ def show_admin_top(call):
             SELECT * FROM (
                 SELECT
                     m.telegram_id,
-                    COUNT(o.id) FILTER (WHERE o.order_status = 'DONE') AS completed,
+                    COUNT(o.id) FILTER (WHERE o.payment_status = 'PAID') AS paid_leads,
                     COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0) AS revenue,
                     CASE WHEN COUNT(o.id) = 0 THEN 0
-                         ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.order_status = 'DONE') / COUNT(o.id)
+                         ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.payment_status = 'PAID') / COUNT(o.id)
                     END AS conversion
                 FROM masters m
                 LEFT JOIN orders o
@@ -940,12 +939,12 @@ def show_admin_top(call):
     finally:
         cur.close()
         conn.close()
-    titles = {"rev": "revenue", "date": "Date", "conv": "conversion"}
+    titles = {"rev": "revenue", "date": "paid leads", "conv": "conversion"}
     lines = [f"🏆 TOP masters by {titles.get(ranking, 'revenue')}"]
-    for index, (master_id, completed, revenue, conversion) in enumerate(rows, start=1):
+    for index, (master_id, paid_leads, revenue, conversion) in enumerate(rows, start=1):
         lines.append(
             f"{index}. {master_id} — {format_money(revenue)} USDT, "
-            f"{completed} Date, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
+            f"{paid_leads} paid leads, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
         )
     bot.send_message(call.message.chat.id, "\n".join(lines))
     bot.answer_callback_query(call.id)
