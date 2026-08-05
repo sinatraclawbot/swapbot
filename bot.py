@@ -58,7 +58,59 @@ def ensure_balance_schema():
             ALTER TABLE orders
             ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(14, 2),
             ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(14, 2),
-            ADD COLUMN IF NOT EXISTS master_balance_after NUMERIC(14, 2)
+            ADD COLUMN IF NOT EXISTS master_balance_after NUMERIC(14, 2),
+            ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS meeting_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_status_history (
+                id BIGSERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                old_status TEXT,
+                new_status TEXT NOT NULL,
+                payment_status TEXT,
+                actor_telegram_id BIGINT,
+                actor_name TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_order_status_history_order
+            ON order_status_history (order_id, created_at)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id BIGSERIAL PRIMARY KEY,
+                actor_telegram_id BIGINT,
+                actor_name TEXT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                old_value TEXT,
+                new_value TEXT,
+                details TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO order_status_history (
+                order_id, old_status, new_status, payment_status, actor_name
+            )
+            SELECT id, NULL, COALESCE(order_status, status, 'NEW'), payment_status, 'Migration'
+            FROM orders o
+            WHERE NOT EXISTS (
+                SELECT 1 FROM order_status_history h WHERE h.order_id = o.id
+            )
             """
         )
         conn.commit()
@@ -80,6 +132,66 @@ def notify_admin(text: str):
 
 def is_admin(user_id: int):
     return ADMIN_TELEGRAM_ID is not None and user_id == ADMIN_TELEGRAM_ID
+
+
+def actor_name(user):
+    if not user:
+        return "System"
+    username = getattr(user, "username", None)
+    full_name = " ".join(
+        part for part in [getattr(user, "first_name", None), getattr(user, "last_name", None)] if part
+    )
+    return f"@{username}" if username else (full_name or str(getattr(user, "id", "Unknown")))
+
+
+def add_audit(
+    cur,
+    actor_id,
+    actor_display,
+    action,
+    entity_type,
+    entity_id=None,
+    old_value=None,
+    new_value=None,
+    details=None,
+):
+    cur.execute(
+        """
+        INSERT INTO audit_log (
+            actor_telegram_id, actor_name, action, entity_type,
+            entity_id, old_value, new_value, details
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            actor_id,
+            actor_display,
+            action,
+            entity_type,
+            str(entity_id) if entity_id is not None else None,
+            str(old_value) if old_value is not None else None,
+            str(new_value) if new_value is not None else None,
+            details,
+        ),
+    )
+
+
+def add_status_history(cur, order_id, old_status, new_status, payment_status, user=None):
+    cur.execute(
+        """
+        INSERT INTO order_status_history (
+            order_id, old_status, new_status, payment_status,
+            actor_telegram_id, actor_name
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            order_id,
+            old_status,
+            new_status,
+            payment_status,
+            getattr(user, "id", None),
+            actor_name(user),
+        ),
+    )
 
 
 def parse_admin_balance_command(message, command_name):
@@ -105,15 +217,18 @@ def parse_admin_balance_command(message, command_name):
     return master_id, amount
 
 
-def main_menu():
+def main_menu(user_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("Create Date"))
-    markup.add(KeyboardButton("Wallet"))
+    markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
+    markup.add(KeyboardButton("Lead History"))
+    if user_id is not None and is_admin(user_id):
+        markup.add(KeyboardButton("Admin Panel"))
     return markup
 
 
 def send_main_menu(chat_id: int, text: str):
-    bot.send_message(chat_id, text, reply_markup=main_menu())
+    bot.send_message(chat_id, text, reply_markup=main_menu(chat_id))
 
 
 def order_group_keyboard(order_id: int):
@@ -176,6 +291,86 @@ def format_keyboard():
     return kb
 
 
+def period_keyboard(prefix):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("Today", callback_data=f"{prefix}_today"),
+        InlineKeyboardButton("7 days", callback_data=f"{prefix}_7d"),
+        InlineKeyboardButton("30 days", callback_data=f"{prefix}_30d"),
+        InlineKeyboardButton("All time", callback_data=f"{prefix}_all"),
+    )
+    return kb
+
+
+def period_condition(period, column="COALESCE(o.accepted_at, o.created_at)"):
+    if period == "today":
+        return f"{column} >= CURRENT_DATE", "Today"
+    if period == "7d":
+        return f"{column} >= NOW() - INTERVAL '7 days'", "Last 7 days"
+    if period == "30d":
+        return f"{column} >= NOW() - INTERVAL '30 days'", "Last 30 days"
+    return "TRUE", "All time"
+
+
+def format_money(value):
+    return f"{Decimal(value or 0).quantize(Decimal('0.01'))}"
+
+
+def master_statistics(master_id, period):
+    condition, label = period_condition(period)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE o.master_telegram_id IS NOT NULL),
+                COUNT(*) FILTER (WHERE o.order_status = 'DONE'),
+                COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
+                COALESCE(AVG(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
+                COALESCE(m.balance, 0)
+            FROM masters m
+            LEFT JOIN orders o
+              ON o.master_telegram_id = m.telegram_id
+             AND {condition}
+            WHERE m.telegram_id = %s
+            GROUP BY m.telegram_id, m.balance
+            """,
+            (master_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not row:
+        return None, label
+    accepted, completed, revenue, average, balance = row
+    conversion = (Decimal(completed) * 100 / Decimal(accepted)) if accepted else Decimal("0")
+    return {
+        "accepted": accepted,
+        "completed": completed,
+        "conversion": conversion.quantize(Decimal("0.01")),
+        "revenue": revenue,
+        "average": average,
+        "balance": balance,
+    }, label
+
+
+def master_statistics_text(master_id, period):
+    stats, label = master_statistics(master_id, period)
+    if not stats:
+        return "Master account not found"
+    return f"""📊 Master statistics — {label}
+
+Accepted Date: {stats['accepted']}
+Completed Date: {stats['completed']}
+Conversion: {stats['conversion']}%
+Revenue: {format_money(stats['revenue'])} USDT
+Average check: {format_money(stats['average'])} USDT
+Balance/debt: {format_money(stats['balance'])} USDT"""
+
+
 @bot.message_handler(commands=["start"])
 def start(message):
     try:
@@ -188,7 +383,7 @@ def start(message):
 def get_id(message):
     try:
         bot.send_message(message.chat.id, f"Your Telegram ID: {message.chat.id}")
-        bot.send_message(message.chat.id, "Menu:", reply_markup=main_menu())
+        bot.send_message(message.chat.id, "Menu:", reply_markup=main_menu(message.from_user.id))
     except Exception as e:
         log("ID ERROR", repr(e))
 
@@ -254,15 +449,22 @@ def set_master_balance(message):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE", (master_id,))
+        current = cur.fetchone()
+        if not current:
+            conn.rollback()
+            bot.send_message(message.chat.id, "Master account not found")
+            return
+        old_balance = current[0]
         cur.execute(
             "UPDATE masters SET balance = %s WHERE telegram_id = %s RETURNING balance",
             (amount, master_id),
         )
         row = cur.fetchone()
-        if not row:
-            conn.rollback()
-            bot.send_message(message.chat.id, "Master account not found")
-            return
+        add_audit(
+            cur, message.from_user.id, actor_name(message.from_user),
+            "SET_BALANCE", "master_balance", master_id, old_balance, row[0],
+        )
         conn.commit()
         bot.send_message(message.chat.id, f"Master {master_id} balance set to {row[0]} USDT")
     finally:
@@ -280,6 +482,13 @@ def add_master_balance(message):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE", (master_id,))
+        current = cur.fetchone()
+        if not current:
+            conn.rollback()
+            bot.send_message(message.chat.id, "Master account not found")
+            return
+        old_balance = current[0]
         cur.execute(
             """
             UPDATE masters
@@ -290,10 +499,10 @@ def add_master_balance(message):
             (amount, master_id),
         )
         row = cur.fetchone()
-        if not row:
-            conn.rollback()
-            bot.send_message(message.chat.id, "Master account not found")
-            return
+        add_audit(
+            cur, message.from_user.id, actor_name(message.from_user),
+            "ADD_BALANCE", "master_balance", master_id, old_balance, row[0],
+        )
         conn.commit()
         bot.send_message(message.chat.id, f"Master {master_id} balance: {row[0]} USDT")
     finally:
@@ -342,6 +551,450 @@ def list_master_balances(message):
             chunk = candidate
     if chunk:
         bot.send_message(message.chat.id, chunk)
+
+
+@bot.message_handler(commands=["stats"])
+@bot.message_handler(func=lambda message: message.text == "Statistics")
+def show_master_statistics(message):
+    text = master_statistics_text(message.from_user.id, "all")
+    bot.send_message(message.chat.id, text, reply_markup=period_keyboard("mstats"))
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mstats_"))
+def change_master_statistics_period(call):
+    period = call.data.split("_", 1)[1]
+    text = master_statistics_text(call.from_user.id, period)
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=period_keyboard("mstats"),
+    )
+    bot.answer_callback_query(call.id)
+
+
+def lead_card(order_id, viewer_id, admin_access=False):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ownership = "TRUE" if admin_access else "o.master_telegram_id = %s"
+        params = (order_id,) if admin_access else (order_id, viewer_id)
+        cur.execute(
+            f"""
+            SELECT
+                o.id,
+                COALESCE(o.profile_name, o.contact_text, '—'),
+                o.client_username,
+                o.created_at,
+                COALESCE(o.order_status, o.status, '—'),
+                o.price,
+                o.meeting_at,
+                o.time_from,
+                o.time_to,
+                o.source,
+                o.paid_amount,
+                o.payment_status,
+                o.master_telegram_id
+            FROM orders o
+            WHERE o.id = %s AND {ownership}
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        cur.execute(
+            """
+            SELECT old_status, new_status, payment_status, actor_name, created_at
+            FROM order_status_history
+            WHERE order_id = %s
+            ORDER BY created_at
+            """,
+            (order_id,),
+        )
+        history = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    (
+        lead_id, client_name, username, created_at, status, price, meeting_at,
+        time_from, time_to, source, paid_amount, payment_status, master_id,
+    ) = row
+    meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
+    username_text = f"@{username}" if username else "—"
+    history_lines = []
+    for old_status, new_status, hist_payment, hist_actor, changed_at in history:
+        transition = f"{old_status or '—'} → {new_status}"
+        history_lines.append(
+            f"{changed_at.strftime('%Y-%m-%d %H:%M')} — {transition}"
+            f" ({hist_payment or '—'}, {hist_actor or 'System'})"
+        )
+    history_text = "\n".join(history_lines) if history_lines else "No history"
+
+    return f"""📋 Lead #{lead_id}
+
+Client: {client_name}
+Telegram: {username_text}
+Created: {created_at.strftime('%Y-%m-%d %H:%M')}
+Status: {status}
+Payment: {payment_status or '—'}
+Initial price: {format_money(price)} USDT
+Final amount: {format_money(paid_amount)} USDT
+Meeting: {meeting}
+Source: {source or 'Telegram Bot'}
+Master ID: {master_id or '—'}
+
+Status history:
+{history_text}"""
+
+
+@bot.message_handler(commands=["leads"])
+@bot.message_handler(func=lambda message: message.text == "Lead History")
+def show_master_leads(message):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, created_at, COALESCE(order_status, status, '—'),
+                   COALESCE(paid_amount, price, 0)
+            FROM orders
+            WHERE master_telegram_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 20
+            """,
+            (message.from_user.id,),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        bot.send_message(message.chat.id, "You have no accepted leads")
+        return
+    kb = InlineKeyboardMarkup(row_width=1)
+    for order_id, created_at, status, amount in rows:
+        kb.add(
+            InlineKeyboardButton(
+                f"#{order_id} · {created_at.strftime('%Y-%m-%d')} · {status} · {format_money(amount)}",
+                callback_data=f"lead_{order_id}",
+            )
+        )
+    bot.send_message(message.chat.id, "📚 Your latest leads:", reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("lead_"))
+def open_master_lead(call):
+    order_id = int(call.data.split("_", 1)[1])
+    text = lead_card(order_id, call.from_user.id)
+    if not text:
+        bot.answer_callback_query(call.id, "Lead not found or access denied")
+        return
+    bot.send_message(call.message.chat.id, text)
+    bot.answer_callback_query(call.id)
+
+
+def admin_panel_keyboard():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("System statistics", callback_data="adm_stats"),
+        InlineKeyboardButton("Masters", callback_data="adm_masters"),
+        InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
+        InlineKeyboardButton("TOP Date", callback_data="adm_top_date"),
+        InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
+        InlineKeyboardButton("Audit log", callback_data="adm_audit"),
+    )
+    kb.add(InlineKeyboardButton("⚠️ Reset masters debt", callback_data="adm_reset_debt"))
+    return kb
+
+
+def require_admin_callback(call):
+    if is_admin(call.from_user.id):
+        return True
+    bot.answer_callback_query(call.id, "Access denied")
+    return False
+
+
+@bot.message_handler(commands=["admin"])
+@bot.message_handler(func=lambda message: message.text == "Admin Panel")
+def show_admin_panel(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    bot.send_message(message.chat.id, "🛠 Admin Panel", reply_markup=admin_panel_keyboard())
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_stats")
+def show_admin_statistics(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*),
+                COUNT(*) FILTER (WHERE master_telegram_id IS NOT NULL),
+                COALESCE(SUM(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0),
+                COALESCE(AVG(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0)
+            FROM orders
+            """
+        )
+        total_leads, dates, revenue, average = cur.fetchone()
+        cur.execute("SELECT COALESCE(SUM(GREATEST(-balance, 0)), 0) FROM masters")
+        debt = cur.fetchone()[0]
+    finally:
+        cur.close()
+        conn.close()
+
+    text = f"""📈 System statistics
+
+Total leads: {total_leads}
+Date assigned: {dates}
+Revenue: {format_money(revenue)} USDT
+Masters debt: {format_money(debt)} USDT
+Average check: {format_money(average)} USDT"""
+    bot.send_message(call.message.chat.id, text)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_masters")
+def show_admin_masters(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT telegram_id, balance, is_active, is_online
+            FROM masters ORDER BY telegram_id LIMIT 50
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    if not rows:
+        bot.send_message(call.message.chat.id, "No masters found")
+        bot.answer_callback_query(call.id)
+        return
+    kb = InlineKeyboardMarkup(row_width=1)
+    for master_id, balance, active, online in rows:
+        state = "🟢" if active and online else "⚪️"
+        kb.add(
+            InlineKeyboardButton(
+                f"{state} {master_id} · {format_money(balance)} USDT",
+                callback_data=f"adm_master_{master_id}",
+            )
+        )
+    bot.send_message(call.message.chat.id, "👥 Masters:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_master_"))
+def show_admin_master_card(call):
+    if not require_admin_callback(call):
+        return
+    master_id = int(call.data.rsplit("_", 1)[1])
+    stats, _ = master_statistics(master_id, "all")
+    if not stats:
+        bot.answer_callback_query(call.id, "Master not found")
+        return
+    text = f"""👤 Master {master_id}
+
+Accepted Date: {stats['accepted']}
+Completed Date: {stats['completed']}
+Conversion: {stats['conversion']}%
+Revenue: {format_money(stats['revenue'])} USDT
+Average check: {format_money(stats['average'])} USDT
+Balance/debt: {format_money(stats['balance'])} USDT"""
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Latest leads", callback_data=f"adm_mleads_{master_id}"))
+    bot.send_message(call.message.chat.id, text, reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_mleads_"))
+def show_admin_master_leads(call):
+    if not require_admin_callback(call):
+        return
+    master_id = int(call.data.rsplit("_", 1)[1])
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, created_at, COALESCE(order_status, status, '—')
+            FROM orders WHERE master_telegram_id = %s
+            ORDER BY created_at DESC, id DESC LIMIT 20
+            """,
+            (master_id,),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    kb = InlineKeyboardMarkup(row_width=1)
+    for order_id, created_at, status in rows:
+        kb.add(
+            InlineKeyboardButton(
+                f"#{order_id} · {created_at.strftime('%Y-%m-%d')} · {status}",
+                callback_data=f"adm_lead_{order_id}",
+            )
+        )
+    bot.send_message(call.message.chat.id, f"Leads of master {master_id}:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_lead_"))
+def open_admin_lead(call):
+    if not require_admin_callback(call):
+        return
+    order_id = int(call.data.rsplit("_", 1)[1])
+    text = lead_card(order_id, call.from_user.id, admin_access=True)
+    bot.send_message(call.message.chat.id, text or "Lead not found")
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_top_"))
+def show_admin_top(call):
+    if not require_admin_callback(call):
+        return
+    ranking = call.data.rsplit("_", 1)[1]
+    order_expression = {
+        "rev": "revenue DESC, completed DESC",
+        "date": "completed DESC, revenue DESC",
+        "conv": "conversion DESC, completed DESC",
+    }.get(ranking, "revenue DESC")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT * FROM (
+                SELECT
+                    m.telegram_id,
+                    COUNT(o.id) FILTER (WHERE o.order_status = 'DONE') AS completed,
+                    COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0) AS revenue,
+                    CASE WHEN COUNT(o.id) = 0 THEN 0
+                         ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.order_status = 'DONE') / COUNT(o.id)
+                    END AS conversion
+                FROM masters m
+                LEFT JOIN orders o ON o.master_telegram_id = m.telegram_id
+                GROUP BY m.telegram_id
+            ) ranked
+            ORDER BY {order_expression}
+            LIMIT 10
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    titles = {"rev": "revenue", "date": "Date", "conv": "conversion"}
+    lines = [f"🏆 TOP masters by {titles.get(ranking, 'revenue')}"]
+    for index, (master_id, completed, revenue, conversion) in enumerate(rows, start=1):
+        lines.append(
+            f"{index}. {master_id} — {format_money(revenue)} USDT, "
+            f"{completed} Date, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
+        )
+    bot.send_message(call.message.chat.id, "\n".join(lines))
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_audit")
+def show_admin_audit(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT actor_name, action, entity_type, entity_id,
+                   old_value, new_value, created_at
+            FROM audit_log ORDER BY created_at DESC LIMIT 30
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    lines = ["🧾 Latest audit operations:"]
+    for actor, action, entity_type, entity_id, old, new, created_at in rows:
+        lines.append(
+            f"{created_at.strftime('%Y-%m-%d %H:%M')} · {actor or 'System'} · {action}\n"
+            f"{entity_type} {entity_id or ''}: {old or '—'} → {new or '—'}"
+        )
+    bot.send_message(call.message.chat.id, "\n\n".join(lines) if rows else "Audit log is empty")
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_debt")
+def confirm_reset_debt(call):
+    if not require_admin_callback(call):
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("Confirm reset + initialize 2000", callback_data="adm_reset_yes"),
+        InlineKeyboardButton("Cancel", callback_data="adm_reset_no"),
+    )
+    bot.send_message(
+        call.message.chat.id,
+        "This will reset every master to 0 and then initialize balance to +2000 USDT. Confirm?",
+        reply_markup=kb,
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_no")
+def cancel_reset_debt(call):
+    if not require_admin_callback(call):
+        return
+    bot.edit_message_text("Reset cancelled", call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_yes")
+def execute_reset_debt(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    summaries = []
+    admin_name = actor_name(call.from_user)
+    try:
+        cur.execute("SELECT telegram_id, balance FROM masters FOR UPDATE")
+        rows = cur.fetchall()
+        for master_id, old_balance in rows:
+            add_audit(
+                cur, call.from_user.id, admin_name, "RESET_DEBT",
+                "master_balance", master_id, old_balance, 0,
+            )
+            add_audit(
+                cur, call.from_user.id, admin_name, "BALANCE_INITIALIZED",
+                "master_balance", master_id, 0, 2000,
+            )
+            summaries.append(f"{master_id}: {format_money(old_balance)} → 0 → 2000 USDT")
+        cur.execute("UPDATE masters SET balance = 2000")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    text = "✅ Debt reset and balances initialized\n\n" + "\n".join(summaries)
+    if len(text) > 3900:
+        text = text[:3850] + "\n…"
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id, "Completed")
 
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
@@ -456,6 +1109,17 @@ def save_order(message):
         )
 
         order_id = cur.fetchone()[0]
+        add_status_history(cur, order_id, None, "NEW", "UNPAID", message.from_user)
+        add_audit(
+            cur,
+            message.from_user.id,
+            actor_name(message.from_user),
+            "CREATE_LEAD",
+            "order",
+            order_id,
+            None,
+            "NEW",
+        )
         conn.commit()
         cur.close()
         conn.close()
@@ -545,14 +1209,28 @@ def accept_order(call):
         cur = conn.cursor()
 
         cur.execute(
+            "SELECT order_status, payment_status FROM orders WHERE id = %s FOR UPDATE",
+            (order_id,),
+        )
+        previous = cur.fetchone()
+        if not previous:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "Request not found")
+            return
+        old_status, old_payment_status = previous
+
+        cur.execute(
             """
             UPDATE orders
             SET status = 'ASSIGNED',
                 order_status = 'ASSIGNED',
-                master_telegram_id = %s
+                master_telegram_id = %s,
+                accepted_at = NOW()
             WHERE id = %s
               AND status = 'NEW'
-            RETURNING client_telegram_id
+            RETURNING client_telegram_id, payment_status
             """,
             (master_id, order_id),
         )
@@ -567,7 +1245,12 @@ def accept_order(call):
             notify_admin(f"⚠️ Accept attempt for already taken request #{order_id}")
             return
 
-        client_id = row[0]
+        client_id, payment_status = row
+        add_status_history(cur, order_id, "NEW", "ASSIGNED", payment_status, call.from_user)
+        add_audit(
+            cur, master_id, actor_name(call.from_user), "ACCEPT_LEAD",
+            "order", order_id, "NEW", "ASSIGNED",
+        )
         conn.commit()
         cur.close()
         conn.close()
@@ -720,6 +1403,17 @@ def save_paid_amount(message, order_id, source_group_id):
             return
 
         cur.execute(
+            "SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE",
+            (master_id,),
+        )
+        balance_row = cur.fetchone()
+        if not balance_row:
+            conn.rollback()
+            bot.send_message(master_id, "Master account not found")
+            return
+        old_balance = balance_row[0]
+
+        cur.execute(
             """
             UPDATE masters
             SET balance = balance - %s
@@ -746,6 +1440,19 @@ def save_paid_amount(message, order_id, source_group_id):
             WHERE id = %s
             """,
             (paid_amount, commission, master_balance, order_id),
+        )
+        add_status_history(
+            cur, order_id, order_status, order_status, "PAID", message.from_user
+        )
+        add_audit(
+            cur, master_id, actor_name(message.from_user), "MARK_PAID",
+            "order", order_id, payment_status, "PAID",
+            f"total={paid_amount}; commission={commission}",
+        )
+        add_audit(
+            cur, master_id, actor_name(message.from_user), "COMMISSION_CHARGED",
+            "master_balance", master_id, old_balance, master_balance,
+            f"order_id={order_id}; commission={commission}",
         )
         conn.commit()
     except Exception:
@@ -791,6 +1498,19 @@ def mark_done(call):
         cur = conn.cursor()
 
         cur.execute(
+            "SELECT order_status, payment_status FROM orders WHERE id = %s FOR UPDATE",
+            (order_id,),
+        )
+        previous = cur.fetchone()
+        if not previous:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "Request not found")
+            return
+        old_status, old_payment_status = previous
+
+        cur.execute(
             """
             UPDATE orders
             SET order_status = 'DONE',
@@ -801,6 +1521,14 @@ def mark_done(call):
             (order_id,),
         )
         row = cur.fetchone()
+
+        add_status_history(
+            cur, order_id, old_status, "DONE", old_payment_status, call.from_user
+        )
+        add_audit(
+            cur, call.from_user.id, actor_name(call.from_user), "MARK_DONE",
+            "order", order_id, old_status, "DONE",
+        )
 
         conn.commit()
         cur.close()
@@ -847,6 +1575,18 @@ def mark_dispute(call):
         cur = conn.cursor()
 
         cur.execute(
+            "SELECT order_status, payment_status FROM orders WHERE id = %s FOR UPDATE",
+            (order_id,),
+        )
+        previous = cur.fetchone()
+        if not previous:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            bot.answer_callback_query(call.id, "Request not found")
+            return
+        old_status, old_payment_status = previous
+        cur.execute(
             """
             UPDATE orders
             SET payment_status = 'DISPUTE',
@@ -857,6 +1597,15 @@ def mark_dispute(call):
             (order_id,),
         )
         row = cur.fetchone()
+
+        add_status_history(
+            cur, order_id, old_status, "DISPUTE", "DISPUTE", call.from_user
+        )
+        add_audit(
+            cur, call.from_user.id, actor_name(call.from_user), "OPEN_DISPUTE",
+            "order", order_id,
+            f"{old_status}/{old_payment_status}", "DISPUTE/DISPUTE",
+        )
 
         conn.commit()
         cur.close()
