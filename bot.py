@@ -266,8 +266,8 @@ def build_group_status_text(
     if paid_amount is not None:
         payment_details = f"""
 Total paid by client: {paid_amount} USDT
-Master fee (30%): {commission} USDT
-Master balance: {master_balance} USDT
+🔄 Swapper fee (30%): {commission} USDT
+💼 Swapper balance: {master_balance} USDT
 """
 
     return f"""📦 Date Request #{order_id}
@@ -380,8 +380,8 @@ def master_statistics(master_id, period):
 def master_statistics_text(master_id, period):
     stats, label = master_statistics(master_id, period)
     if not stats:
-        return "Master account not found"
-    return f"""📊 Master statistics — {label}
+        return "🔄 Swapper account not found"
+    return f"""📊 Swapper statistics — {label}
 
 Accepted Date: {stats['accepted']}
 Paid leads: {stats['paid_leads']}
@@ -441,7 +441,7 @@ def get_balance(message):
         conn.close()
 
         if not row:
-            bot.send_message(message.chat.id, "Master account not found")
+            bot.send_message(message.chat.id, "🔄 Swapper account not found")
             return
         balance, total_paid = row
         if target_id == message.from_user.id:
@@ -452,7 +452,7 @@ def get_balance(message):
         else:
             bot.send_message(
                 message.chat.id,
-                f"Master {target_id}\nBalance: {balance} USDT\nTotal paid: {total_paid} USDT",
+                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n💰 Total paid: {total_paid} USDT",
             )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
@@ -473,7 +473,7 @@ def set_master_balance(message):
         current = cur.fetchone()
         if not current:
             conn.rollback()
-            bot.send_message(message.chat.id, "Master account not found")
+            bot.send_message(message.chat.id, "🔄 Swapper account not found")
             return
         old_balance = current[0]
         cur.execute(
@@ -486,7 +486,7 @@ def set_master_balance(message):
             "SET_BALANCE", "master_balance", master_id, old_balance, row[0],
         )
         conn.commit()
-        bot.send_message(message.chat.id, f"Master {master_id} balance set to {row[0]} USDT")
+        bot.send_message(message.chat.id, f"✅ Swapper {master_id} balance set to {row[0]} USDT")
     finally:
         cur.close()
         conn.close()
@@ -506,7 +506,7 @@ def add_master_balance(message):
         current = cur.fetchone()
         if not current:
             conn.rollback()
-            bot.send_message(message.chat.id, "Master account not found")
+            bot.send_message(message.chat.id, "🔄 Swapper account not found")
             return
         old_balance = current[0]
         cur.execute(
@@ -524,7 +524,7 @@ def add_master_balance(message):
             "ADD_BALANCE", "master_balance", master_id, old_balance, row[0],
         )
         conn.commit()
-        bot.send_message(message.chat.id, f"Master {master_id} balance: {row[0]} USDT")
+        bot.send_message(message.chat.id, f"💼 Swapper {master_id} balance: {row[0]} USDT")
     finally:
         cur.close()
         conn.close()
@@ -552,10 +552,10 @@ def list_master_balances(message):
         conn.close()
 
     if not rows:
-        bot.send_message(message.chat.id, "No masters found")
+        bot.send_message(message.chat.id, "🔄 No Swappers found")
         return
 
-    lines = ["💼 Master balances:"]
+    lines = ["💼🔄 Swapper balances:"]
     for telegram_id, balance, is_active, is_online in rows:
         status = "active" if is_active else "inactive"
         online = "online" if is_online else "offline"
@@ -669,7 +669,7 @@ Initial price: {format_money(price)} USDT
 Final amount: {format_money(paid_amount)} USDT
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
-Master ID: {master_id or '—'}
+🔄 Swapper ID: {master_id or '—'}
 
 Status history:
 {history_text}"""
@@ -730,13 +730,13 @@ def admin_panel_keyboard():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
-        InlineKeyboardButton("Masters", callback_data="adm_masters"),
+        InlineKeyboardButton("🔄 Swappers", callback_data="adm_masters"),
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
         InlineKeyboardButton("TOP paid leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
-    kb.add(InlineKeyboardButton("⚠️ Reset masters debt", callback_data="adm_reset_debt"))
+    kb.add(InlineKeyboardButton("⚠️ Reset Swappers debt", callback_data="adm_reset_debt"))
     return kb
 
 
@@ -789,7 +789,7 @@ def show_admin_statistics(call):
 Total leads: {total_leads}
 Date assigned: {dates}
 Revenue: {format_money(revenue)} USDT
-Masters debt: {format_money(debt)} USDT
+🔄 Swappers debt: {format_money(debt)} USDT
 Average check: {format_money(average)} USDT"""
     bot.send_message(call.message.chat.id, text)
     bot.answer_callback_query(call.id)
@@ -813,7 +813,7 @@ def show_admin_masters(call):
         cur.close()
         conn.close()
     if not rows:
-        bot.send_message(call.message.chat.id, "No masters found")
+        bot.send_message(call.message.chat.id, "🔄 No Swappers found")
         bot.answer_callback_query(call.id)
         return
     kb = InlineKeyboardMarkup(row_width=1)
@@ -825,7 +825,7 @@ def show_admin_masters(call):
                 callback_data=f"adm_master_{master_id}",
             )
         )
-    bot.send_message(call.message.chat.id, "👥 Masters:", reply_markup=kb)
+    bot.send_message(call.message.chat.id, "👥🔄 Swappers:", reply_markup=kb)
     bot.answer_callback_query(call.id)
 
 
@@ -836,9 +836,9 @@ def show_admin_master_card(call):
     master_id = int(call.data.rsplit("_", 1)[1])
     stats, _ = master_statistics(master_id, "all")
     if not stats:
-        bot.answer_callback_query(call.id, "Master not found")
+        bot.answer_callback_query(call.id, "Swapper not found")
         return
-    text = f"""👤 Master {master_id}
+    text = f"""🔄👤 Swapper {master_id}
 
 Accepted Date: {stats['accepted']}
 Paid leads: {stats['paid_leads']}
@@ -885,7 +885,7 @@ def show_admin_master_leads(call):
                 callback_data=f"adm_lead_{order_id}",
             )
         )
-    bot.send_message(call.message.chat.id, f"Leads of master {master_id}:", reply_markup=kb)
+    bot.send_message(call.message.chat.id, f"📚 Leads of Swapper {master_id}:", reply_markup=kb)
     bot.answer_callback_query(call.id)
 
 
@@ -940,7 +940,7 @@ def show_admin_top(call):
         cur.close()
         conn.close()
     titles = {"rev": "revenue", "date": "paid leads", "conv": "conversion"}
-    lines = [f"🏆 TOP masters by {titles.get(ranking, 'revenue')}"]
+    lines = [f"🏆🔄 TOP Swappers by {titles.get(ranking, 'revenue')}"]
     for index, (master_id, paid_leads, revenue, conversion) in enumerate(rows, start=1):
         lines.append(
             f"{index}. {master_id} — {format_money(revenue)} USDT, "
@@ -989,7 +989,7 @@ def confirm_reset_debt(call):
     )
     bot.send_message(
         call.message.chat.id,
-        "This will reset every master to 0 and then initialize balance to +2000 USDT. Confirm?",
+        "⚠️ This will reset every Swapper to 0 and then initialize balance to +2000 USDT. Confirm?",
         reply_markup=kb,
     )
     bot.answer_callback_query(call.id)
@@ -1232,9 +1232,9 @@ Profile: {data['profile_name']}
             log("ORDER SENT TO MASTER", telegram_id)
         except Exception as e:
             log("SEND ORDER ERROR TO MASTER", telegram_id, repr(e))
-            notify_admin(f"❌ Could not send request #{order_id} to master {telegram_id}: {repr(e)}")
+            notify_admin(f"❌ Could not send request #{order_id} to Swapper {telegram_id}: {repr(e)}")
 
-    notify_admin("📨 Date request sent to masters:\n\n" + text)
+    notify_admin("📨 Date request sent to Swappers:\n\n" + text)
 
     cur.close()
     conn.close()
@@ -1298,14 +1298,14 @@ def accept_order(call):
         cur.close()
         conn.close()
 
-        notify_admin(f"✅ Accept clicked for request #{order_id}\nMaster TG ID: {master_id}\nClient TG ID: {client_id}")
+        notify_admin(f"✅ Swapper accepted request #{order_id}\n🔄 Swapper TG ID: {master_id}\nClient TG ID: {client_id}")
 
         invite_link, group_chat_id = create_order_group(order_id)
         group_chat_id = int(f"-100{group_chat_id}")
 
         notify_admin(f"""✅ Group created for Date Request #{order_id}
 
-Master TG ID: {master_id}
+🔄 Swapper TG ID: {master_id}
 Client TG ID: {client_id}
 Group ID: {group_chat_id}
 Invite: {invite_link}
@@ -1314,7 +1314,7 @@ Invite: {invite_link}
         try:
             send_main_menu(
                 client_id,
-                f"✅ Master accepted date request #{order_id}\nHere is your chat link:\n{invite_link}",
+                f"✅ Swapper accepted date request #{order_id}\nHere is your chat link:\n{invite_link}",
             )
         except Exception as e:
             log("SEND TO CLIENT ERROR", repr(e))
@@ -1327,7 +1327,7 @@ Invite: {invite_link}
             )
         except Exception as e:
             log("SEND TO MASTER ERROR", repr(e))
-            notify_admin(f"❌ Could not send invite to master for request #{order_id}: {repr(e)}")
+            notify_admin(f"❌ Could not send invite to Swapper for request #{order_id}: {repr(e)}")
 
         try:
             bot.send_message(
@@ -1374,7 +1374,7 @@ def mark_paid(call):
 
         payment_status, assigned_master_id = row
         if assigned_master_id != master_id:
-            bot.answer_callback_query(call.id, "Only the assigned master can mark Paid")
+            bot.answer_callback_query(call.id, "Only the assigned Swapper can mark Paid")
             return
 
         if payment_status == "PAID":
@@ -1437,7 +1437,7 @@ def save_paid_amount(message, order_id, source_group_id):
         payment_status, assigned_master_id, group_chat_id, order_status = row
         if assigned_master_id != master_id:
             conn.rollback()
-            bot.send_message(master_id, "You are not the assigned master for this request")
+            bot.send_message(master_id, "You are not the assigned Swapper for this request")
             return
 
         if payment_status == "PAID":
@@ -1452,7 +1452,7 @@ def save_paid_amount(message, order_id, source_group_id):
         balance_row = cur.fetchone()
         if not balance_row:
             conn.rollback()
-            bot.send_message(master_id, "Master account not found")
+            bot.send_message(master_id, "Swapper account not found")
             return
         old_balance = balance_row[0]
 
@@ -1469,7 +1469,7 @@ def save_paid_amount(message, order_id, source_group_id):
         master_row = cur.fetchone()
         if not master_row:
             conn.rollback()
-            bot.send_message(master_id, "Active master account not found")
+            bot.send_message(master_id, "Active Swapper account not found")
             return
 
         master_balance = master_row[0]
@@ -1527,8 +1527,8 @@ def save_paid_amount(message, order_id, source_group_id):
     notify_admin(
         f"💰 Date request #{order_id}: marked as PAID\n"
         f"Total: {paid_amount} USDT\n"
-        f"Master fee (30%): {commission} USDT\n"
-        f"Master balance: {master_balance} USDT"
+        f"🔄 Swapper fee (30%): {commission} USDT\n"
+        f"💼 Swapper balance: {master_balance} USDT"
     )
 
 
