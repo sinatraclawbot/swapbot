@@ -103,6 +103,22 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES ('statistics_started_at', NOW()::TEXT)
+            ON CONFLICT (setting_key) DO NOTHING
+            """
+        )
+        cur.execute(
+            """
             INSERT INTO order_status_history (
                 order_id, old_status, new_status, payment_status, actor_name
             )
@@ -302,14 +318,19 @@ def period_keyboard(prefix):
     return kb
 
 
-def period_condition(period, column="COALESCE(o.accepted_at, o.created_at)"):
+def period_condition(period, column="o.created_at"):
+    statistics_start = """
+        (SELECT setting_value::TIMESTAMPTZ
+         FROM app_settings
+         WHERE setting_key = 'statistics_started_at')
+    """
     if period == "today":
-        return f"{column} >= CURRENT_DATE", "Today"
+        return f"{column} >= GREATEST(CURRENT_DATE, {statistics_start})", "Today"
     if period == "7d":
-        return f"{column} >= NOW() - INTERVAL '7 days'", "Last 7 days"
+        return f"{column} >= GREATEST(NOW() - INTERVAL '7 days', {statistics_start})", "Last 7 days"
     if period == "30d":
-        return f"{column} >= NOW() - INTERVAL '30 days'", "Last 30 days"
-    return "TRUE", "All time"
+        return f"{column} >= GREATEST(NOW() - INTERVAL '30 days', {statistics_start})", "Last 30 days"
+    return f"{column} >= {statistics_start}", "Since statistics reset"
 
 
 def format_money(value):
@@ -596,7 +617,12 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.payment_status,
                 o.master_telegram_id
             FROM orders o
-            WHERE o.id = %s AND {ownership}
+            WHERE o.id = %s
+              AND {ownership}
+              AND o.created_at >= (
+                  SELECT setting_value::TIMESTAMPTZ FROM app_settings
+                  WHERE setting_key = 'statistics_started_at'
+              )
             """,
             params,
         )
@@ -662,6 +688,10 @@ def show_master_leads(message):
                    COALESCE(paid_amount, price, 0)
             FROM orders
             WHERE master_telegram_id = %s
+              AND created_at >= (
+                  SELECT setting_value::TIMESTAMPTZ FROM app_settings
+                  WHERE setting_key = 'statistics_started_at'
+              )
             ORDER BY created_at DESC, id DESC
             LIMIT 20
             """,
@@ -742,6 +772,10 @@ def show_admin_statistics(call):
                 COALESCE(SUM(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0),
                 COALESCE(AVG(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0)
             FROM orders
+            WHERE created_at >= (
+                SELECT setting_value::TIMESTAMPTZ FROM app_settings
+                WHERE setting_key = 'statistics_started_at'
+            )
             """
         )
         total_leads, dates, revenue, average = cur.fetchone()
@@ -830,7 +864,12 @@ def show_admin_master_leads(call):
         cur.execute(
             """
             SELECT id, created_at, COALESCE(order_status, status, '—')
-            FROM orders WHERE master_telegram_id = %s
+            FROM orders
+            WHERE master_telegram_id = %s
+              AND created_at >= (
+                  SELECT setting_value::TIMESTAMPTZ FROM app_settings
+                  WHERE setting_key = 'statistics_started_at'
+              )
             ORDER BY created_at DESC, id DESC LIMIT 20
             """,
             (master_id,),
@@ -885,7 +924,12 @@ def show_admin_top(call):
                          ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.order_status = 'DONE') / COUNT(o.id)
                     END AS conversion
                 FROM masters m
-                LEFT JOIN orders o ON o.master_telegram_id = m.telegram_id
+                LEFT JOIN orders o
+                  ON o.master_telegram_id = m.telegram_id
+                 AND o.created_at >= (
+                     SELECT setting_value::TIMESTAMPTZ FROM app_settings
+                     WHERE setting_key = 'statistics_started_at'
+                 )
                 GROUP BY m.telegram_id
             ) ranked
             ORDER BY {order_expression}
