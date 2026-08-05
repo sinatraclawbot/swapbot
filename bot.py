@@ -329,7 +329,7 @@ def period_condition(period, column="o.created_at"):
         return f"{column} >= GREATEST(NOW() - INTERVAL '7 days', {statistics_start})", "Last 7 days"
     if period == "30d":
         return f"{column} >= GREATEST(NOW() - INTERVAL '30 days', {statistics_start})", "Last 30 days"
-    return f"{column} >= {statistics_start}", "Since statistics reset"
+    return f"{column} >= {statistics_start}", "All time"
 
 
 def format_money(value):
