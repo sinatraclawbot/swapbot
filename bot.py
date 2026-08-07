@@ -113,7 +113,7 @@ def ensure_balance_schema():
         cur.execute(
             """
             INSERT INTO app_settings (setting_key, setting_value)
-            VALUES ('statistics_started_at', NOW()::TEXT)
+            VALUES ('statistics_started_at_gift_v1', NOW()::TEXT)
             ON CONFLICT (setting_key) DO NOTHING
             """
         )
@@ -321,7 +321,7 @@ def period_condition(period, column="o.created_at"):
     statistics_start = """
         (SELECT setting_value::TIMESTAMPTZ
          FROM app_settings
-         WHERE setting_key = 'statistics_started_at')
+         WHERE setting_key = 'statistics_started_at_gift_v1')
     """
     if period == "today":
         return f"{column} >= GREATEST(CURRENT_DATE, {statistics_start})", "Today"
@@ -620,7 +620,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
               AND {ownership}
               AND o.created_at >= (
                   SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                  WHERE setting_key = 'statistics_started_at'
+                  WHERE setting_key = 'statistics_started_at_gift_v1'
               )
             """,
             params,
@@ -689,7 +689,7 @@ def show_master_leads(message):
             WHERE master_telegram_id = %s
               AND created_at >= (
                   SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                  WHERE setting_key = 'statistics_started_at'
+                  WHERE setting_key = 'statistics_started_at_gift_v1'
               )
             ORDER BY created_at DESC, id DESC
             LIMIT 20
@@ -773,7 +773,7 @@ def show_admin_statistics(call):
             FROM orders
             WHERE created_at >= (
                 SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                WHERE setting_key = 'statistics_started_at'
+                WHERE setting_key = 'statistics_started_at_gift_v1'
             )
             """
         )
@@ -867,7 +867,7 @@ def show_admin_master_leads(call):
             WHERE master_telegram_id = %s
               AND created_at >= (
                   SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                  WHERE setting_key = 'statistics_started_at'
+                  WHERE setting_key = 'statistics_started_at_gift_v1'
               )
             ORDER BY created_at DESC, id DESC LIMIT 20
             """,
@@ -927,7 +927,7 @@ def show_admin_top(call):
                   ON o.master_telegram_id = m.telegram_id
                  AND o.created_at >= (
                      SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                     WHERE setting_key = 'statistics_started_at'
+                     WHERE setting_key = 'statistics_started_at_gift_v1'
                  )
                 GROUP BY m.telegram_id
             ) ranked
