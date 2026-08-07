@@ -249,7 +249,7 @@ def send_main_menu(chat_id: int, text: str):
 
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("💰 Paid", callback_data=f"paid_{order_id}"))
+    kb.add(InlineKeyboardButton("🎁 Gift", callback_data=f"gift_{order_id}"))
     kb.add(InlineKeyboardButton("⚠️ Dispute", callback_data=f"dispute_{order_id}"))
     return kb
 
@@ -265,7 +265,7 @@ def build_group_status_text(
     payment_details = ""
     if paid_amount is not None:
         payment_details = f"""
-Total paid by client: {paid_amount} USDT
+🎁 Total Gift: {paid_amount} USDT
 🔄 Swapper fee (30%): {commission} USDT
 💼 Swapper balance: {master_balance} USDT
 """
@@ -345,9 +345,9 @@ def master_statistics(master_id, period):
             f"""
             SELECT
                 COUNT(*) FILTER (WHERE o.master_telegram_id IS NOT NULL),
-                COUNT(*) FILTER (WHERE o.payment_status = 'PAID'),
-                COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
-                COALESCE(AVG(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0),
+                COUNT(*) FILTER (WHERE o.payment_status = 'GIFT'),
+                COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'GIFT'), 0),
+                COALESCE(AVG(o.paid_amount) FILTER (WHERE o.payment_status = 'GIFT'), 0),
                 COALESCE(m.balance, 0)
             FROM masters m
             LEFT JOIN orders o
@@ -384,7 +384,7 @@ def master_statistics_text(master_id, period):
     return f"""📊 Swapper statistics — {label}
 
 Accepted Date: {stats['accepted']}
-Paid leads: {stats['paid_leads']}
+🎁 Gift leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -426,11 +426,11 @@ def get_balance(message):
             """
             SELECT
                 m.balance,
-                COALESCE(SUM(o.paid_amount), 0) AS total_paid
+                COALESCE(SUM(o.paid_amount), 0) AS total_gift
             FROM masters m
             LEFT JOIN orders o
               ON o.master_telegram_id = m.telegram_id
-             AND o.payment_status = 'PAID'
+             AND o.payment_status = 'GIFT'
             WHERE m.telegram_id = %s
             GROUP BY m.telegram_id, m.balance
             """,
@@ -443,16 +443,16 @@ def get_balance(message):
         if not row:
             bot.send_message(message.chat.id, "🔄 Swapper account not found")
             return
-        balance, total_paid = row
+        balance, total_gift = row
         if target_id == message.from_user.id:
             bot.send_message(
                 message.chat.id,
-                f"💼 Wallet\nBalance: {balance} USDT\nTotal paid: {total_paid} USDT",
+                f"💼 Wallet\nBalance: {balance} USDT\n🎁 Total Gift: {total_gift} USDT",
             )
         else:
             bot.send_message(
                 message.chat.id,
-                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n💰 Total paid: {total_paid} USDT",
+                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n🎁 Total Gift: {total_gift} USDT",
             )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
@@ -732,7 +732,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
         InlineKeyboardButton("🔄 Swappers", callback_data="adm_masters"),
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
-        InlineKeyboardButton("TOP paid leads", callback_data="adm_top_date"),
+        InlineKeyboardButton("TOP Gift leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
@@ -768,8 +768,8 @@ def show_admin_statistics(call):
             SELECT
                 COUNT(*),
                 COUNT(*) FILTER (WHERE master_telegram_id IS NOT NULL),
-                COALESCE(SUM(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0),
-                COALESCE(AVG(paid_amount) FILTER (WHERE payment_status = 'PAID'), 0)
+                COALESCE(SUM(paid_amount) FILTER (WHERE payment_status = 'GIFT'), 0),
+                COALESCE(AVG(paid_amount) FILTER (WHERE payment_status = 'GIFT'), 0)
             FROM orders
             WHERE created_at >= (
                 SELECT setting_value::TIMESTAMPTZ FROM app_settings
@@ -841,7 +841,7 @@ def show_admin_master_card(call):
     text = f"""🔄👤 Swapper {master_id}
 
 Accepted Date: {stats['accepted']}
-Paid leads: {stats['paid_leads']}
+🎁 Gift leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -917,10 +917,10 @@ def show_admin_top(call):
             SELECT * FROM (
                 SELECT
                     m.telegram_id,
-                    COUNT(o.id) FILTER (WHERE o.payment_status = 'PAID') AS paid_leads,
-                    COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'PAID'), 0) AS revenue,
+                    COUNT(o.id) FILTER (WHERE o.payment_status = 'GIFT') AS paid_leads,
+                    COALESCE(SUM(o.paid_amount) FILTER (WHERE o.payment_status = 'GIFT'), 0) AS revenue,
                     CASE WHEN COUNT(o.id) = 0 THEN 0
-                         ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.payment_status = 'PAID') / COUNT(o.id)
+                         ELSE 100.0 * COUNT(o.id) FILTER (WHERE o.payment_status = 'GIFT') / COUNT(o.id)
                     END AS conversion
                 FROM masters m
                 LEFT JOIN orders o
@@ -939,12 +939,12 @@ def show_admin_top(call):
     finally:
         cur.close()
         conn.close()
-    titles = {"rev": "revenue", "date": "paid leads", "conv": "conversion"}
+    titles = {"rev": "revenue", "date": "Gift leads", "conv": "conversion"}
     lines = [f"🏆🔄 TOP Swappers by {titles.get(ranking, 'revenue')}"]
     for index, (master_id, paid_leads, revenue, conversion) in enumerate(rows, start=1):
         lines.append(
             f"{index}. {master_id} — {format_money(revenue)} USDT, "
-            f"{paid_leads} paid leads, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
+            f"{paid_leads} Gift leads, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
         )
     bot.send_message(call.message.chat.id, "\n".join(lines))
     bot.answer_callback_query(call.id)
@@ -1135,7 +1135,7 @@ def save_order(message):
                 order_status,
                 payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'UNPAID')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
             RETURNING id
             """,
             (
@@ -1152,7 +1152,7 @@ def save_order(message):
         )
 
         order_id = cur.fetchone()[0]
-        add_status_history(cur, order_id, None, "NEW", "UNPAID", message.from_user)
+        add_status_history(cur, order_id, None, "NEW", "NO_GIFT", message.from_user)
         add_audit(
             cur,
             message.from_user.id,
@@ -1332,7 +1332,7 @@ Invite: {invite_link}
         try:
             bot.send_message(
                 group_chat_id,
-                build_group_status_text(order_id, "IN_CHAT", "UNPAID"),
+                build_group_status_text(order_id, "IN_CHAT", "NO_GIFT"),
                 reply_markup=order_group_keyboard(order_id),
             )
             notify_admin(f"📨 Status card sent to group for request #{order_id}")
@@ -1347,7 +1347,9 @@ Invite: {invite_link}
         notify_admin(f"❌ ACCEPT ERROR: {repr(e)}")
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("paid_"))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("gift_") or call.data.startswith("paid_")
+)
 def mark_paid(call):
     try:
         order_id = int(call.data.split("_")[1])
@@ -1374,16 +1376,16 @@ def mark_paid(call):
 
         payment_status, assigned_master_id = row
         if assigned_master_id != master_id:
-            bot.answer_callback_query(call.id, "Only the assigned Swapper can mark Paid")
+            bot.answer_callback_query(call.id, "Only the assigned Swapper can send Gift")
             return
 
-        if payment_status == "PAID":
-            bot.answer_callback_query(call.id, "Payment was already recorded")
+        if payment_status in ("PAID", "GIFT"):
+            bot.answer_callback_query(call.id, "Gift was already recorded")
             return
 
         msg = bot.send_message(
             master_id,
-            f"Enter the total amount paid by the client for request #{order_id} (USDT):",
+            f"Enter the total Gift amount for request #{order_id} (USDT):",
         )
         bot.register_next_step_handler(
             msg,
@@ -1394,8 +1396,8 @@ def mark_paid(call):
         bot.answer_callback_query(call.id, "Enter the total amount in private chat")
 
     except Exception as e:
-        log("PAID ERROR", repr(e))
-        notify_admin(f"❌ PAID ERROR: {repr(e)}")
+        log("GIFT ERROR", repr(e))
+        notify_admin(f"❌ GIFT ERROR: {repr(e)}")
 
 
 def save_paid_amount(message, order_id, source_group_id):
@@ -1440,9 +1442,9 @@ def save_paid_amount(message, order_id, source_group_id):
             bot.send_message(master_id, "You are not the assigned Swapper for this request")
             return
 
-        if payment_status == "PAID":
+        if payment_status in ("PAID", "GIFT"):
             conn.rollback()
-            bot.send_message(master_id, "Payment was already recorded; balance was not charged again")
+            bot.send_message(master_id, "Gift was already recorded; balance was not charged again")
             return
 
         cur.execute(
@@ -1476,7 +1478,7 @@ def save_paid_amount(message, order_id, source_group_id):
         cur.execute(
             """
             UPDATE orders
-            SET payment_status = 'PAID',
+            SET payment_status = 'GIFT',
                 paid_amount = %s,
                 commission_amount = %s,
                 master_balance_after = %s
@@ -1485,11 +1487,11 @@ def save_paid_amount(message, order_id, source_group_id):
             (paid_amount, commission, master_balance, order_id),
         )
         add_status_history(
-            cur, order_id, order_status, order_status, "PAID", message.from_user
+            cur, order_id, order_status, order_status, "GIFT", message.from_user
         )
         add_audit(
-            cur, master_id, actor_name(message.from_user), "MARK_PAID",
-            "order", order_id, payment_status, "PAID",
+            cur, master_id, actor_name(message.from_user), "MARK_GIFT",
+            "order", order_id, payment_status, "GIFT",
             f"total={paid_amount}; commission={commission}",
         )
         add_audit(
@@ -1511,7 +1513,7 @@ def save_paid_amount(message, order_id, source_group_id):
     status_text = build_group_status_text(
         order_id,
         order_status or "IN_CHAT",
-        "PAID",
+        "GIFT",
     )
 
     bot.send_message(
@@ -1525,8 +1527,8 @@ def save_paid_amount(message, order_id, source_group_id):
     )
 
     notify_admin(
-        f"💰 Date request #{order_id}: marked as PAID\n"
-        f"Total: {paid_amount} USDT\n"
+        f"🎁 Date request #{order_id}: marked as GIFT\n"
+        f"Gift total: {paid_amount} USDT\n"
         f"🔄 Swapper fee (30%): {commission} USDT\n"
         f"💼 Swapper balance: {master_balance} USDT"
     )
@@ -1578,7 +1580,7 @@ def mark_done(call):
         conn.close()
 
         group_chat_id = row[0] if row else None
-        payment_status = row[1] if row else "PAID"
+        payment_status = row[1] if row else "GIFT"
 
         if group_chat_id and not str(group_chat_id).startswith("-100"):
             group_chat_id = int(f"-100{group_chat_id}")
