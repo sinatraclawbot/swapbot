@@ -19,6 +19,9 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
 ADMIN_TELEGRAM_ID_RAW = os.getenv("ADMIN_TELEGRAM_ID")
 ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID_RAW) if ADMIN_TELEGRAM_ID_RAW else None
+FULL_ADMIN_IDS = {5411302547}
+if ADMIN_TELEGRAM_ID is not None:
+    FULL_ADMIN_IDS.add(ADMIN_TELEGRAM_ID)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -147,7 +150,7 @@ def notify_admin(text: str):
 
 
 def is_admin(user_id: int):
-    return ADMIN_TELEGRAM_ID is not None and user_id == ADMIN_TELEGRAM_ID
+    return user_id in FULL_ADMIN_IDS
 
 
 def actor_name(user):
