@@ -213,6 +213,119 @@ def add_status_history(cur, order_id, old_status, new_status, payment_status, us
     )
 
 
+def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="System"):
+    new_amount = Decimal(new_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if new_amount <= 0:
+        raise ValueError("Gift amount must be greater than zero")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT paid_amount, commission_amount, master_telegram_id,
+                   payment_status, order_status
+            FROM orders
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+        order = cur.fetchone()
+        if not order:
+            raise ValueError("Date request not found")
+
+        old_amount, old_commission, master_id, payment_status, order_status = order
+        if payment_status not in ("GIFT", "PAID"):
+            raise ValueError("Gift has not been recorded for this request")
+        if master_id is None:
+            raise ValueError("No Swapper is assigned to this request")
+
+        old_amount = Decimal(old_amount or 0).quantize(Decimal("0.01"))
+        old_commission = Decimal(old_commission or 0).quantize(Decimal("0.01"))
+        new_commission = (new_amount * COMMISSION_RATE).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if (
+            actor_id is None
+            and old_amount == new_amount
+            and old_commission == new_commission
+            and payment_status == "GIFT"
+        ):
+            return {
+                "old_amount": old_amount,
+                "new_amount": new_amount,
+                "old_commission": old_commission,
+                "new_commission": new_commission,
+                "balance_adjustment": Decimal("0"),
+                "new_balance": None,
+                "master_id": master_id,
+            }
+        balance_adjustment = old_commission - new_commission
+
+        cur.execute(
+            """
+            UPDATE masters
+            SET balance = balance + %s
+            WHERE telegram_id = %s
+            RETURNING balance
+            """,
+            (balance_adjustment, master_id),
+        )
+        balance_row = cur.fetchone()
+        if not balance_row:
+            raise ValueError("Swapper account not found")
+        new_balance = balance_row[0]
+        old_balance = Decimal(new_balance) - balance_adjustment
+
+        cur.execute(
+            """
+            UPDATE orders
+            SET payment_status = 'GIFT',
+                paid_amount = %s,
+                commission_amount = %s,
+                master_balance_after = %s
+            WHERE id = %s
+            """,
+            (new_amount, new_commission, new_balance, order_id),
+        )
+        cur.execute(
+            """
+            INSERT INTO order_status_history (
+                order_id, old_status, new_status, payment_status,
+                actor_telegram_id, actor_name
+            ) VALUES (%s, %s, %s, 'GIFT', %s, %s)
+            """,
+            (order_id, order_status, order_status, actor_id, actor_display),
+        )
+        add_audit(
+            cur, actor_id, actor_display, "EDIT_GIFT", "order", order_id,
+            old_amount, new_amount,
+            f"commission={old_commission}->{new_commission}; balance_adjustment={balance_adjustment}",
+        )
+        add_audit(
+            cur, actor_id, actor_display, "GIFT_BALANCE_CORRECTION",
+            "master_balance", master_id, old_balance, new_balance,
+            f"order_id={order_id}; adjustment={balance_adjustment}",
+        )
+        conn.commit()
+        return {
+            "old_amount": old_amount,
+            "new_amount": new_amount,
+            "old_commission": old_commission,
+            "new_commission": new_commission,
+            "balance_adjustment": balance_adjustment,
+            "new_balance": new_balance,
+            "master_id": master_id,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def parse_admin_balance_command(message, command_name):
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
@@ -739,6 +852,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
+    kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("⚠️ Reset Swappers debt", callback_data="adm_reset_debt"))
     return kb
 
@@ -979,6 +1093,65 @@ def show_admin_audit(call):
         )
     bot.send_message(call.message.chat.id, "\n\n".join(lines) if rows else "Audit log is empty")
     bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_edit_gift")
+def start_admin_edit_gift(call):
+    if not require_admin_callback(call):
+        return
+    msg = bot.send_message(call.from_user.id, "✏️ Enter Date request ID:")
+    bot.register_next_step_handler(msg, receive_admin_edit_gift_order)
+    bot.answer_callback_query(call.id)
+
+
+def receive_admin_edit_gift_order(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    try:
+        order_id = int(message.text.strip().lstrip("#"))
+    except (ValueError, AttributeError):
+        msg = bot.send_message(message.chat.id, "Enter a valid numeric Date request ID:")
+        bot.register_next_step_handler(msg, receive_admin_edit_gift_order)
+        return
+    msg = bot.send_message(message.chat.id, f"🎁 Enter the correct Gift amount for #{order_id} (USDT):")
+    bot.register_next_step_handler(msg, receive_admin_edit_gift_amount, order_id)
+
+
+def receive_admin_edit_gift_amount(message, order_id):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    try:
+        amount = Decimal(message.text.strip().replace(",", "."))
+        result = correct_gift_amount(
+            order_id,
+            amount,
+            actor_id=message.from_user.id,
+            actor_display=actor_name(message.from_user),
+        )
+    except (ValueError, InvalidOperation) as e:
+        bot.send_message(message.chat.id, f"❌ Gift was not changed: {e}")
+        return
+    except Exception as e:
+        log("EDIT GIFT ERROR", repr(e))
+        notify_admin(f"❌ EDIT GIFT ERROR for #{order_id}: {repr(e)}")
+        bot.send_message(message.chat.id, "❌ Could not update Gift. Check the admin log.")
+        return
+
+    bot.send_message(
+        message.chat.id,
+        f"""✅ Gift corrected for Date request #{order_id}
+
+🎁 Gift: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT
+💸 Fee: {format_money(result['old_commission'])} → {format_money(result['new_commission'])} USDT
+💼 Swapper {result['master_id']} balance: {format_money(result['new_balance'])} USDT""",
+    )
+    notify_admin(
+        f"✏️ Gift corrected for Date request #{order_id}\n"
+        f"Gift: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT\n"
+        f"Swapper: {result['master_id']}"
+    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_reset_debt")
@@ -1727,6 +1900,17 @@ def setup_webhook(max_attempts=12, retry_delay=10):
 
 
 ensure_balance_schema()
+try:
+    correction_904 = correct_gift_amount(
+        904,
+        Decimal("1500.00"),
+        actor_display="System correction requested by admin",
+    )
+    if correction_904["new_balance"] is not None:
+        log("ORDER 904 GIFT CORRECTED", "1500.00 USDT")
+except Exception as e:
+    log("ORDER 904 GIFT CORRECTION ERROR", repr(e))
+    notify_admin(f"❌ ORDER 904 GIFT CORRECTION ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
 
 if __name__ == "__main__":
