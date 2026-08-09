@@ -36,6 +36,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
 COMMISSION_RATE = Decimal("0.30")
+LOW_BALANCE_THRESHOLD = Decimal("500.00")
+LOW_BALANCE_REMINDER_INTERVAL_HOURS = 2
+LOW_BALANCE_CHECK_INTERVAL_SECONDS = 300
 
 
 def log(*args):
@@ -53,7 +56,8 @@ def ensure_balance_schema():
         cur.execute(
             """
             ALTER TABLE masters
-            ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2) NOT NULL DEFAULT 0
+            ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS last_low_balance_reminder_at TIMESTAMPTZ
             """
         )
         cur.execute(
@@ -1978,6 +1982,72 @@ def setup_webhook(max_attempts=12, retry_delay=10):
     notify_admin("❌ Could not set webhook after repeated attempts")
 
 
+def send_low_balance_reminders():
+    while True:
+        conn = None
+        cur = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE masters
+                SET last_low_balance_reminder_at = NULL
+                WHERE balance >= %s
+                  AND last_low_balance_reminder_at IS NOT NULL
+                """,
+                (LOW_BALANCE_THRESHOLD,),
+            )
+            cur.execute(
+                """
+                UPDATE masters
+                SET last_low_balance_reminder_at = NOW()
+                WHERE telegram_id IN (
+                    SELECT telegram_id
+                    FROM masters
+                    WHERE is_active = TRUE
+                      AND balance < %s
+                      AND (
+                          last_low_balance_reminder_at IS NULL
+                          OR last_low_balance_reminder_at <= NOW() - (%s * INTERVAL '1 hour')
+                      )
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING telegram_id, balance
+                """,
+                (LOW_BALANCE_THRESHOLD, LOW_BALANCE_REMINDER_INTERVAL_HOURS),
+            )
+            swappers = cur.fetchall()
+            conn.commit()
+
+            for telegram_id, balance in swappers:
+                try:
+                    bot.send_message(
+                        telegram_id,
+                        f"""🚨 Hey, Swapper! Your wallet has started a diet 🥲
+
+💼 Balance: {format_money(balance)} USDT
+🎯 Minimum comfortable balance: {format_money(LOW_BALANCE_THRESHOLD)} USDT
+
+Time to feed the wallet before it starts asking other wallets for snacks 🍔💸
+Please contact an admin to top up your balance.""",
+                    )
+                    log("LOW BALANCE REMINDER SENT", telegram_id, format_money(balance))
+                except Exception as e:
+                    log("LOW BALANCE REMINDER SEND ERROR", telegram_id, repr(e))
+        except Exception as e:
+            if conn is not None:
+                conn.rollback()
+            log("LOW BALANCE REMINDER LOOP ERROR", repr(e))
+        finally:
+            if cur is not None:
+                cur.close()
+            if conn is not None:
+                conn.close()
+
+        time.sleep(LOW_BALANCE_CHECK_INTERVAL_SECONDS)
+
+
 ensure_balance_schema()
 try:
     correction_904 = correct_gift_amount(
@@ -1997,6 +2067,7 @@ except Exception as e:
     log("ORDER 904 DUPLICATE GIFT REFUND ERROR", repr(e))
     notify_admin(f"❌ ORDER 904 DUPLICATE GIFT REFUND ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
+threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
