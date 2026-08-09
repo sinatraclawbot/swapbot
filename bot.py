@@ -326,6 +326,85 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
         conn.close()
 
 
+def apply_order_904_duplicate_charge_fix():
+    """Refund the duplicate 3000/1000 Gift charge once after #904 is normalized to 1500."""
+    correction_key = "order_904_duplicate_charge_refund_v1"
+    refund = Decimal("900.00")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT 1 FROM app_settings WHERE setting_key = %s",
+            (correction_key,),
+        )
+        if cur.fetchone():
+            return False
+
+        cur.execute(
+            """
+            SELECT master_telegram_id, paid_amount, commission_amount, payment_status
+            FROM orders
+            WHERE id = 904
+            FOR UPDATE
+            """
+        )
+        order = cur.fetchone()
+        if not order:
+            raise ValueError("Date request #904 not found")
+        master_id, gift_amount, commission, payment_status = order
+        if (
+            payment_status != "GIFT"
+            or Decimal(gift_amount or 0) != Decimal("1500.00")
+            or Decimal(commission or 0) != Decimal("450.00")
+        ):
+            raise ValueError("Date request #904 is not normalized to Gift 1500 / fee 450")
+
+        cur.execute(
+            "SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE",
+            (master_id,),
+        )
+        balance_row = cur.fetchone()
+        if not balance_row:
+            raise ValueError("Swapper account for #904 not found")
+        old_balance = Decimal(balance_row[0])
+        new_balance = old_balance + refund
+
+        cur.execute(
+            "UPDATE masters SET balance = %s WHERE telegram_id = %s",
+            (new_balance, master_id),
+        )
+        cur.execute(
+            "UPDATE orders SET master_balance_after = %s WHERE id = 904",
+            (new_balance,),
+        )
+        add_audit(
+            cur,
+            None,
+            "System correction requested by admin",
+            "DUPLICATE_GIFT_REFUND",
+            "master_balance",
+            master_id,
+            old_balance,
+            new_balance,
+            "order_id=904; refund=900.00; duplicate Gift entries were 3000 and 1000",
+        )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, NOW()::TEXT)
+            """,
+            (correction_key,),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def parse_admin_balance_command(message, command_name):
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
@@ -1911,6 +1990,12 @@ try:
 except Exception as e:
     log("ORDER 904 GIFT CORRECTION ERROR", repr(e))
     notify_admin(f"❌ ORDER 904 GIFT CORRECTION ERROR: {repr(e)}")
+try:
+    if apply_order_904_duplicate_charge_fix():
+        log("ORDER 904 DUPLICATE GIFT REFUND APPLIED", "900.00 USDT")
+except Exception as e:
+    log("ORDER 904 DUPLICATE GIFT REFUND ERROR", repr(e))
+    notify_admin(f"❌ ORDER 904 DUPLICATE GIFT REFUND ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
 
 if __name__ == "__main__":
