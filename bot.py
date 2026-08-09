@@ -453,6 +453,21 @@ def order_group_keyboard(order_id: int):
     return kb
 
 
+def send_and_pin_group_card(chat_id, text, reply_markup):
+    message = bot.send_message(chat_id, text, reply_markup=reply_markup)
+    try:
+        bot.pin_chat_message(
+            chat_id,
+            message.message_id,
+            disable_notification=True,
+        )
+        log("GROUP STATUS CARD PINNED", chat_id, message.message_id)
+    except Exception as e:
+        log("PIN GROUP STATUS CARD ERROR", chat_id, repr(e))
+        notify_admin(f"❌ Could not pin status card in group {chat_id}: {repr(e)}")
+    return message
+
+
 def build_group_status_text(
     order_id: int,
     order_status: str,
@@ -1589,10 +1604,10 @@ Invite: {invite_link}
             notify_admin(f"❌ Could not send invite to Swapper for request #{order_id}: {repr(e)}")
 
         try:
-            bot.send_message(
+            send_and_pin_group_card(
                 group_chat_id,
                 build_group_status_text(order_id, "IN_CHAT", "NO_GIFT"),
-                reply_markup=order_group_keyboard(order_id),
+                order_group_keyboard(order_id),
             )
             notify_admin(f"📨 Status card sent to group for request #{order_id}")
         except Exception as e:
@@ -1775,10 +1790,10 @@ def save_paid_amount(message, order_id, source_group_id):
         "GIFT",
     )
 
-    bot.send_message(
+    send_and_pin_group_card(
         group_chat_id or source_group_id,
         status_text,
-        reply_markup=order_group_keyboard(order_id),
+        order_group_keyboard(order_id),
     )
     bot.send_message(
         master_id,
