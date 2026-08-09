@@ -3,8 +3,13 @@ import asyncio
 import psycopg2
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
+from telethon.tl.functions.channels import (
+    CreateChannelRequest,
+    EditAdminRequest,
+    InviteToChannelRequest,
+)
 from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
+from telethon.tl.types import ChatAdminRights
 
 TG_API_ID_RAW = os.getenv("TG_API_ID")
 TG_API_HASH = os.getenv("TG_API_HASH")
@@ -100,8 +105,16 @@ async def create_group_async(order_id):
                         users=[bot_entity],
                     )
                 )
+                await client(
+                    EditAdminRequest(
+                        channel=channel,
+                        user_id=bot_entity,
+                        admin_rights=ChatAdminRights(pin_messages=True),
+                        rank="SwapBot",
+                    )
+                )
             except Exception as e:
-                print("ADD BOT TO GROUP ERROR:", repr(e), flush=True)
+                print("ADD/PROMOTE BOT IN GROUP ERROR:", repr(e), flush=True)
 
         invite = await client(ExportChatInviteRequest(channel))
         invite_link = invite.link
