@@ -39,6 +39,8 @@ COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
 LOW_BALANCE_REMINDER_INTERVAL_HOURS = 2
 LOW_BALANCE_CHECK_INTERVAL_SECONDS = 300
+LEAD_FOLLOWUP_DELAY_HOURS = 8
+LEAD_FOLLOWUP_CHECK_INTERVAL_SECONDS = 300
 
 
 def log(*args):
@@ -68,6 +70,7 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS master_balance_after NUMERIC(14, 2),
             ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS meeting_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS lead_followup_reminded_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             """
@@ -121,6 +124,13 @@ def ensure_balance_schema():
             """
             INSERT INTO app_settings (setting_key, setting_value)
             VALUES ('statistics_started_at_gift_v1', NOW()::TEXT)
+            ON CONFLICT (setting_key) DO NOTHING
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES ('lead_reminders_started_at_v1', NOW()::TEXT)
             ON CONFLICT (setting_key) DO NOTHING
             """
         )
@@ -2063,6 +2073,74 @@ Please contact an admin to top up your balance.""",
         time.sleep(LOW_BALANCE_CHECK_INTERVAL_SECONDS)
 
 
+def send_unresolved_lead_reminders():
+    while True:
+        conn = None
+        cur = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE orders
+                SET lead_followup_reminded_at = NOW()
+                WHERE id IN (
+                    SELECT id
+                    FROM orders
+                    WHERE master_telegram_id IS NOT NULL
+                      AND lead_followup_reminded_at IS NULL
+                      AND created_at >= (
+                          SELECT setting_value::TIMESTAMPTZ
+                          FROM app_settings
+                          WHERE setting_key = 'lead_reminders_started_at_v1'
+                      )
+                      AND created_at <= NOW() - (%s * INTERVAL '1 hour')
+                      AND COALESCE(payment_status, 'NO_GIFT') NOT IN ('GIFT', 'PAID', 'DISPUTE')
+                      AND COALESCE(order_status, status, 'NEW') <> 'DISPUTE'
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING id, master_telegram_id, invite_link
+                """,
+                (LEAD_FOLLOWUP_DELAY_HOURS,),
+            )
+            leads = cur.fetchall()
+            conn.commit()
+
+            for order_id, master_id, invite_link in leads:
+                group_line = f"\n\ud83d\udc49 Open group: {invite_link}" if invite_link else ""
+                try:
+                    bot.send_message(
+                        master_id,
+                        f"""⏰ Hey, Swapper! What happened with Date Request #{order_id}? 👀
+
+It has been 8 hours, but the lead still has no 🎁 Gift and no ⚠️ Dispute.
+Please check the chat and update the status — this lead is starting to feel forgotten 🥲{group_line}""",
+                    )
+                    log("UNRESOLVED LEAD REMINDER SENT", order_id, master_id)
+                except Exception as e:
+                    log("UNRESOLVED LEAD REMINDER SEND ERROR", order_id, master_id, repr(e))
+                    try:
+                        cur.execute(
+                            "UPDATE orders SET lead_followup_reminded_at = NULL WHERE id = %s",
+                            (order_id,),
+                        )
+                        conn.commit()
+                    except Exception as reset_error:
+                        conn.rollback()
+                        log("UNRESOLVED LEAD REMINDER RESET ERROR", order_id, repr(reset_error))
+        except Exception as e:
+            if conn is not None:
+                conn.rollback()
+            log("UNRESOLVED LEAD REMINDER LOOP ERROR", repr(e))
+        finally:
+            if cur is not None:
+                cur.close()
+            if conn is not None:
+                conn.close()
+
+        time.sleep(LEAD_FOLLOWUP_CHECK_INTERVAL_SECONDS)
+
+
 ensure_balance_schema()
 try:
     correction_904 = correct_gift_amount(
@@ -2083,6 +2161,7 @@ except Exception as e:
     notify_admin(f"❌ ORDER 904 DUPLICATE GIFT REFUND ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
+threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
