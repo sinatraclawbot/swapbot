@@ -35,6 +35,7 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
+admin_topups = {}
 COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
 LOW_BALANCE_REMINDER_INTERVAL_HOURS = 2
@@ -961,7 +962,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
     kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
-    kb.add(InlineKeyboardButton("⚠️ Reset Swappers debt", callback_data="adm_reset_debt"))
+    kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     return kb
 
 
@@ -1262,53 +1263,154 @@ def receive_admin_edit_gift_amount(message, order_id):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_debt")
-def confirm_reset_debt(call):
-    if not require_admin_callback(call):
-        return
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("Confirm reset + initialize 2000", callback_data="adm_reset_yes"),
-        InlineKeyboardButton("Cancel", callback_data="adm_reset_no"),
-    )
-    bot.send_message(
-        call.message.chat.id,
-        "⚠️ This will reset every Swapper to 0 and then initialize balance to +2000 USDT. Confirm?",
-        reply_markup=kb,
-    )
-    bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_no")
-def cancel_reset_debt(call):
-    if not require_admin_callback(call):
-        return
-    bot.edit_message_text("Reset cancelled", call.message.chat.id, call.message.message_id)
-    bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_reset_yes")
-def execute_reset_debt(call):
+@bot.callback_query_handler(func=lambda call: call.data == "adm_topup")
+def choose_topup_swapper(call):
     if not require_admin_callback(call):
         return
     conn = get_conn()
     cur = conn.cursor()
-    summaries = []
-    admin_name = actor_name(call.from_user)
     try:
-        cur.execute("SELECT telegram_id, balance FROM masters FOR UPDATE")
+        cur.execute(
+            """
+            SELECT telegram_id, balance, is_active
+            FROM masters
+            ORDER BY is_active DESC, telegram_id
+            LIMIT 50
+            """
+        )
         rows = cur.fetchall()
-        for master_id, old_balance in rows:
-            add_audit(
-                cur, call.from_user.id, admin_name, "RESET_DEBT",
-                "master_balance", master_id, old_balance, 0,
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        bot.send_message(call.message.chat.id, "🔄 No Swappers found")
+        bot.answer_callback_query(call.id)
+        return
+
+    kb = InlineKeyboardMarkup(row_width=1)
+    for master_id, balance, is_active in rows:
+        state = "🟢" if is_active else "⚪️"
+        kb.add(
+            InlineKeyboardButton(
+                f"{state} {master_id} · {format_money(balance)} USDT",
+                callback_data=f"adm_topup_master_{master_id}",
             )
-            add_audit(
-                cur, call.from_user.id, admin_name, "BALANCE_INITIALIZED",
-                "master_balance", master_id, 0, 2000,
-            )
-            summaries.append(f"{master_id}: {format_money(old_balance)} → 0 → 2000 USDT")
-        cur.execute("UPDATE masters SET balance = 2000")
+        )
+    bot.send_message(call.message.chat.id, "💰 Choose a Swapper to top up:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_topup_master_"))
+def request_topup_amount(call):
+    if not require_admin_callback(call):
+        return
+    master_id = int(call.data.rsplit("_", 1)[1])
+    admin_topups.pop(call.from_user.id, None)
+    msg = bot.send_message(
+        call.from_user.id,
+        f"💵 Enter the top-up amount for Swapper {master_id} (USDT):",
+    )
+    bot.register_next_step_handler(msg, receive_topup_amount, master_id)
+    bot.answer_callback_query(call.id)
+
+
+def receive_topup_amount(message, master_id):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    try:
+        amount = Decimal(message.text.strip().replace(",", ".")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, AttributeError):
+        msg = bot.send_message(message.chat.id, "Enter a positive amount, for example 500")
+        bot.register_next_step_handler(msg, receive_topup_amount, master_id)
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s", (master_id,))
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        bot.send_message(message.chat.id, "🔄 Swapper account not found")
+        return
+
+    old_balance = Decimal(row[0])
+    new_balance = old_balance + amount
+    admin_topups[message.from_user.id] = {
+        "master_id": master_id,
+        "amount": amount,
+    }
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("✅ Confirm Top Up", callback_data=f"adm_topup_confirm_{master_id}"),
+        InlineKeyboardButton("❌ Cancel", callback_data=f"adm_topup_cancel_{master_id}"),
+    )
+    bot.send_message(
+        message.chat.id,
+        f"""💰 Confirm balance top up
+
+🔄 Swapper: {master_id}
+💼 Current balance: {format_money(old_balance)} USDT
+➕ Top-up amount: {format_money(amount)} USDT
+✅ Balance after top up: {format_money(new_balance)} USDT""",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_topup_cancel_"))
+def cancel_topup(call):
+    if not require_admin_callback(call):
+        return
+    admin_topups.pop(call.from_user.id, None)
+    bot.edit_message_text("Top up cancelled", call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_topup_confirm_"))
+def confirm_topup(call):
+    if not require_admin_callback(call):
+        return
+    master_id = int(call.data.rsplit("_", 1)[1])
+    pending = admin_topups.get(call.from_user.id)
+    if not pending or pending["master_id"] != master_id:
+        bot.answer_callback_query(call.id, "Top-up request expired. Start again.", show_alert=True)
+        return
+    amount = pending["amount"]
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE", (master_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Swapper account not found", show_alert=True)
+            return
+        old_balance = Decimal(row[0])
+        new_balance = old_balance + amount
+        cur.execute(
+            "UPDATE masters SET balance = %s WHERE telegram_id = %s",
+            (new_balance, master_id),
+        )
+        add_audit(
+            cur,
+            call.from_user.id,
+            actor_name(call.from_user),
+            "ADMIN_TOP_UP",
+            "master_balance",
+            master_id,
+            old_balance,
+            new_balance,
+            f"top_up_amount={amount}",
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1317,11 +1419,32 @@ def execute_reset_debt(call):
         cur.close()
         conn.close()
 
-    text = "✅ Debt reset and balances initialized\n\n" + "\n".join(summaries)
-    if len(text) > 3900:
-        text = text[:3850] + "\n…"
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
-    bot.answer_callback_query(call.id, "Completed")
+    admin_topups.pop(call.from_user.id, None)
+    bot.edit_message_text(
+        f"""✅ Balance topped up
+
+🔄 Swapper: {master_id}
+➕ Added: {format_money(amount)} USDT
+💼 Balance: {format_money(old_balance)} → {format_money(new_balance)} USDT""",
+        call.message.chat.id,
+        call.message.message_id,
+    )
+    bot.answer_callback_query(call.id, "Balance topped up")
+    try:
+        bot.send_message(
+            master_id,
+            f"💰 Your balance was topped up by {format_money(amount)} USDT.\n"
+            f"💼 New balance: {format_money(new_balance)} USDT",
+        )
+    except Exception as e:
+        log("TOP UP NOTIFICATION ERROR", master_id, repr(e))
+    notify_admin(
+        f"💰 Swapper balance topped up\n"
+        f"Admin: {actor_name(call.from_user)}\n"
+        f"Swapper: {master_id}\n"
+        f"Amount: {format_money(amount)} USDT\n"
+        f"Balance: {format_money(old_balance)} → {format_money(new_balance)} USDT"
+    )
 
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
