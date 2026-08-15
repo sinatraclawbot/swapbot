@@ -420,6 +420,70 @@ def apply_order_904_duplicate_charge_fix():
         conn.close()
 
 
+def remove_swapper_8649754773_once():
+    correction_key = "remove_swapper_8649754773_v1"
+    master_id = 8649754773
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT 1 FROM app_settings WHERE setting_key = %s",
+            (correction_key,),
+        )
+        if cur.fetchone():
+            return False
+
+        cur.execute(
+            """
+            SELECT balance, is_active, is_online
+            FROM masters
+            WHERE telegram_id = %s
+            FOR UPDATE
+            """,
+            (master_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Swapper {master_id} not found")
+
+        balance, was_active, was_online = row
+        cur.execute(
+            """
+            UPDATE masters
+            SET is_active = FALSE,
+                is_online = FALSE
+            WHERE telegram_id = %s
+            """,
+            (master_id,),
+        )
+        add_audit(
+            cur,
+            None,
+            "System removal requested by admin",
+            "REMOVE_SWAPPER",
+            "master",
+            master_id,
+            f"active={was_active}; online={was_online}; balance={balance}",
+            f"active=False; online=False; balance={balance}",
+            "Removed from active Swappers; historical orders and financial records preserved",
+        )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, NOW()::TEXT)
+            """,
+            (correction_key,),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def parse_admin_balance_command(message, command_name):
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
@@ -2282,6 +2346,13 @@ try:
 except Exception as e:
     log("ORDER 904 DUPLICATE GIFT REFUND ERROR", repr(e))
     notify_admin(f"❌ ORDER 904 DUPLICATE GIFT REFUND ERROR: {repr(e)}")
+try:
+    if remove_swapper_8649754773_once():
+        log("SWAPPER REMOVED", 8649754773)
+        notify_admin("✅ Swapper 8649754773 removed from active Swappers")
+except Exception as e:
+    log("REMOVE SWAPPER 8649754773 ERROR", repr(e))
+    notify_admin(f"❌ REMOVE SWAPPER 8649754773 ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
