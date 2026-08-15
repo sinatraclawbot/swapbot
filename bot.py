@@ -832,6 +832,7 @@ def list_master_balances(message):
             """
             SELECT telegram_id, balance, is_active, is_online
             FROM masters
+            WHERE is_active = TRUE
             ORDER BY telegram_id
             """
         )
@@ -1068,7 +1069,9 @@ def show_admin_statistics(call):
             """
         )
         total_leads, dates, revenue, average = cur.fetchone()
-        cur.execute("SELECT COALESCE(SUM(GREATEST(-balance, 0)), 0) FROM masters")
+        cur.execute(
+            "SELECT COALESCE(SUM(GREATEST(-balance, 0)), 0) FROM masters WHERE is_active = TRUE"
+        )
         debt = cur.fetchone()[0]
     finally:
         cur.close()
@@ -1095,7 +1098,10 @@ def show_admin_masters(call):
         cur.execute(
             """
             SELECT telegram_id, balance, is_active, is_online
-            FROM masters ORDER BY telegram_id LIMIT 50
+            FROM masters
+            WHERE is_active = TRUE
+            ORDER BY telegram_id
+            LIMIT 50
             """
         )
         rows = cur.fetchall()
@@ -1219,6 +1225,7 @@ def show_admin_top(call):
                      SELECT setting_value::TIMESTAMPTZ FROM app_settings
                      WHERE setting_key = 'statistics_started_at_gift_v1'
                  )
+                WHERE m.is_active = TRUE
                 GROUP BY m.telegram_id
             ) ranked
             ORDER BY {order_expression}
@@ -1338,7 +1345,8 @@ def choose_topup_swapper(call):
             """
             SELECT telegram_id, balance, is_active
             FROM masters
-            ORDER BY is_active DESC, telegram_id
+            WHERE is_active = TRUE
+            ORDER BY telegram_id
             LIMIT 50
             """
         )
@@ -1397,7 +1405,10 @@ def receive_topup_amount(message, master_id):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s", (master_id,))
+        cur.execute(
+            "SELECT balance FROM masters WHERE telegram_id = %s AND is_active = TRUE",
+            (master_id,),
+        )
         row = cur.fetchone()
     finally:
         cur.close()
@@ -1452,7 +1463,14 @@ def confirm_topup(call):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE", (master_id,))
+        cur.execute(
+            """
+            SELECT balance FROM masters
+            WHERE telegram_id = %s AND is_active = TRUE
+            FOR UPDATE
+            """,
+            (master_id,),
+        )
         row = cur.fetchone()
         if not row:
             conn.rollback()
