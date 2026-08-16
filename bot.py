@@ -1,9 +1,12 @@
 import os
+import queue
 import threading
 import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import telebot
 import psycopg2
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+from psycopg2.pool import ThreadedConnectionPool
 from flask import Flask, request
 from telebot.types import (
     ReplyKeyboardMarkup,
@@ -36,20 +39,60 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
 admin_topups = {}
+group_creation_queue = queue.Queue()
+lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
 LOW_BALANCE_REMINDER_INTERVAL_HOURS = 2
 LOW_BALANCE_CHECK_INTERVAL_SECONDS = 300
 LEAD_FOLLOWUP_DELAY_HOURS = 8
 LEAD_FOLLOWUP_CHECK_INTERVAL_SECONDS = 300
+DB_POOL_MIN_CONNECTIONS = 1
+DB_POOL_MAX_CONNECTIONS = 12
+_db_pool = None
+_db_pool_lock = threading.Lock()
 
 
 def log(*args):
     print(*args, flush=True)
 
 
+class PooledConnection:
+    def __init__(self, pool, connection):
+        self._pool = pool
+        self._connection = connection
+        self._returned = False
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def close(self):
+        if self._returned:
+            return
+        self._returned = True
+        close_connection = bool(self._connection.closed)
+        if not close_connection:
+            try:
+                if self._connection.get_transaction_status() != TRANSACTION_STATUS_IDLE:
+                    self._connection.rollback()
+            except Exception:
+                close_connection = True
+        self._pool.putconn(self._connection, close=close_connection)
+
+
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                _db_pool = ThreadedConnectionPool(
+                    DB_POOL_MIN_CONNECTIONS,
+                    DB_POOL_MAX_CONNECTIONS,
+                    dsn=DATABASE_URL,
+                    connect_timeout=5,
+                    application_name="swapbot",
+                )
+    return PooledConnection(_db_pool, _db_pool.getconn())
 
 
 def ensure_balance_schema():
@@ -1656,7 +1699,7 @@ def save_order(message):
         cur.close()
         conn.close()
 
-        send_order_to_masters(order_id, data)
+        lead_dispatch_queue.put((order_id, dict(data)))
 
         user_data.pop(message.chat.id, None)
 
@@ -1729,6 +1772,80 @@ Profile: {data['profile_name']}
     conn.close()
 
 
+def lead_dispatch_worker():
+    while True:
+        order_id, data = lead_dispatch_queue.get()
+        try:
+            send_order_to_masters(order_id, data)
+        except Exception as e:
+            log("LEAD DISPATCH WORKER ERROR", order_id, repr(e))
+            notify_admin(f"❌ Could not dispatch request #{order_id}: {repr(e)}")
+        finally:
+            lead_dispatch_queue.task_done()
+
+
+def complete_accepted_order_group(order_id, master_id, client_id):
+    try:
+        invite_link, group_chat_id = create_order_group(order_id)
+        group_chat_id = int(f"-100{group_chat_id}")
+
+        notify_admin(f"""✅ Group created for Date Request #{order_id}
+
+🔄 Swapper TG ID: {master_id}
+Client TG ID: {client_id}
+Group ID: {group_chat_id}
+Invite: {invite_link}
+""")
+
+        try:
+            send_main_menu(
+                client_id,
+                f"✅ Swapper accepted date request #{order_id}\nHere is your chat link:\n{invite_link}",
+            )
+        except Exception as e:
+            log("SEND TO CLIENT ERROR", repr(e))
+            notify_admin(f"❌ Could not send invite to client for request #{order_id}: {repr(e)}")
+
+        try:
+            bot.send_message(
+                master_id,
+                f"✅ Date request #{order_id} is yours\nHere is your chat link:\n{invite_link}",
+            )
+        except Exception as e:
+            log("SEND TO MASTER ERROR", repr(e))
+            notify_admin(f"❌ Could not send invite to Swapper for request #{order_id}: {repr(e)}")
+
+        try:
+            send_and_pin_group_card(
+                group_chat_id,
+                build_group_status_text(order_id, "IN_CHAT", "NO_GIFT"),
+                order_group_keyboard(order_id),
+            )
+            notify_admin(f"📨 Status card sent to group for request #{order_id}")
+        except Exception as e:
+            log("SEND STATUS CARD TO GROUP ERROR", repr(e))
+            notify_admin(f"❌ Could not send status card to group for request #{order_id}: {repr(e)}")
+    except Exception as e:
+        log("GROUP CREATION WORKER ERROR", order_id, repr(e))
+        notify_admin(f"❌ GROUP CREATION ERROR for request #{order_id}: {repr(e)}")
+        try:
+            bot.send_message(
+                master_id,
+                f"❌ Could not create the group for request #{order_id}. The admin has been notified.",
+            )
+        except Exception as send_error:
+            log("GROUP CREATION FAILURE MESSAGE ERROR", order_id, repr(send_error))
+
+
+def group_creation_worker():
+    while True:
+        order_id, master_id, client_id = group_creation_queue.get()
+        try:
+            complete_accepted_order_group(order_id, master_id, client_id)
+        finally:
+            group_creation_queue.task_done()
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
     try:
@@ -1787,49 +1904,16 @@ def accept_order(call):
         cur.close()
         conn.close()
 
-        notify_admin(f"✅ Swapper accepted request #{order_id}\n🔄 Swapper TG ID: {master_id}\nClient TG ID: {client_id}")
-
-        invite_link, group_chat_id = create_order_group(order_id)
-        group_chat_id = int(f"-100{group_chat_id}")
-
-        notify_admin(f"""✅ Group created for Date Request #{order_id}
-
-🔄 Swapper TG ID: {master_id}
-Client TG ID: {client_id}
-Group ID: {group_chat_id}
-Invite: {invite_link}
-""")
-
+        bot.answer_callback_query(call.id, "Accepted — creating the group…")
         try:
-            send_main_menu(
-                client_id,
-                f"✅ Swapper accepted date request #{order_id}\nHere is your chat link:\n{invite_link}",
-            )
+            bot.send_message(master_id, f"✅ Request #{order_id} accepted. Creating the group…")
         except Exception as e:
-            log("SEND TO CLIENT ERROR", repr(e))
-            notify_admin(f"❌ Could not send invite to client for request #{order_id}: {repr(e)}")
-
-        try:
-            bot.send_message(
-                master_id,
-                f"✅ Date request #{order_id} is yours\nHere is your chat link:\n{invite_link}",
-            )
-        except Exception as e:
-            log("SEND TO MASTER ERROR", repr(e))
-            notify_admin(f"❌ Could not send invite to Swapper for request #{order_id}: {repr(e)}")
-
-        try:
-            send_and_pin_group_card(
-                group_chat_id,
-                build_group_status_text(order_id, "IN_CHAT", "NO_GIFT"),
-                order_group_keyboard(order_id),
-            )
-            notify_admin(f"📨 Status card sent to group for request #{order_id}")
-        except Exception as e:
-            log("SEND STATUS CARD TO GROUP ERROR", repr(e))
-            notify_admin(f"❌ Could not send status card to group for request #{order_id}: {repr(e)}")
-
-        bot.answer_callback_query(call.id, "Accepted")
+            log("ACCEPT CONFIRMATION MESSAGE ERROR", order_id, repr(e))
+        group_creation_queue.put((order_id, master_id, client_id))
+        notify_admin(
+            f"✅ Swapper accepted request #{order_id}\n"
+            f"🔄 Swapper TG ID: {master_id}\nClient TG ID: {client_id}"
+        )
 
     except Exception as e:
         log("ACCEPT ERROR", repr(e))
@@ -2374,6 +2458,8 @@ except Exception as e:
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
+threading.Thread(target=lead_dispatch_worker, daemon=True).start()
+threading.Thread(target=group_creation_worker, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
