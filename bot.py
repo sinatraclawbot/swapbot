@@ -39,6 +39,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 user_data = {}
 admin_topups = {}
+pending_disputes = {}
 group_creation_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
@@ -115,6 +116,9 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS meeting_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS lead_followup_reminded_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS dispute_comment TEXT,
+            ADD COLUMN IF NOT EXISTS dispute_blacklisted BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS dispute_opened_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             """
@@ -161,6 +165,21 @@ def ensure_balance_schema():
                 setting_key TEXT PRIMARY KEY,
                 setting_value TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_blacklist (
+                client_telegram_id BIGINT PRIMARY KEY,
+                client_username TEXT,
+                reason TEXT NOT NULL,
+                order_id BIGINT,
+                added_by_telegram_id BIGINT,
+                added_by_name TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
@@ -947,7 +966,9 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.source,
                 o.paid_amount,
                 o.payment_status,
-                o.master_telegram_id
+                o.master_telegram_id,
+                o.dispute_comment,
+                o.dispute_blacklisted
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
@@ -979,6 +1000,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
     (
         lead_id, client_name, username, created_at, status, price, meeting_at,
         time_from, time_to, source, paid_amount, payment_status, master_id,
+        dispute_comment, dispute_blacklisted,
     ) = row
     meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
     username_text = f"@{username}" if username else "—"
@@ -990,6 +1012,13 @@ def lead_card(order_id, viewer_id, admin_access=False):
             f" ({hist_payment or '—'}, {hist_actor or 'System'})"
         )
     history_text = "\n".join(history_lines) if history_lines else "No history"
+    dispute_details = ""
+    if dispute_comment:
+        blacklist_text = "YES 🚫" if dispute_blacklisted else "NO"
+        dispute_details = (
+            f"\nDispute reason: {dispute_comment}"
+            f"\nClient blacklisted: {blacklist_text}"
+        )
 
     return f"""📋 Lead #{lead_id}
 
@@ -1003,6 +1032,7 @@ Final amount: {format_money(paid_amount)} USDT
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
+{dispute_details}
 
 Status history:
 {history_text}"""
@@ -1574,6 +1604,35 @@ def confirm_topup(call):
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
 def create_order(message):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT reason, order_id
+            FROM client_blacklist
+            WHERE client_telegram_id = %s
+              AND is_active = TRUE
+            """,
+            (message.from_user.id,),
+        )
+        blacklist_row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if blacklist_row:
+        reason, source_order_id = blacklist_row
+        bot.send_message(
+            message.chat.id,
+            "⛔ You cannot create a new Date Request. Please contact an administrator.",
+        )
+        notify_admin(
+            f"⛔ Blacklisted client tried to create a Date Request\n"
+            f"Client TG ID: {message.from_user.id}\n"
+            f"Blacklist source: request #{source_order_id or '—'}\n"
+            f"Reason: {reason}"
+        )
+        return
     user_data[message.chat.id] = {}
     msg = bot.send_message(message.chat.id, "Enter contact:")
     bot.register_next_step_handler(msg, get_contact)
@@ -2184,79 +2243,311 @@ def mark_done(call):
         notify_admin(f"❌ DONE ERROR: {repr(e)}")
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("dispute_"))
-def mark_dispute(call):
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("dispute_") and call.data[8:].isdigit()
+)
+def start_dispute(call):
     try:
         order_id = int(call.data.split("_")[1])
-
         conn = get_conn()
         cur = conn.cursor()
-
-        cur.execute(
-            "SELECT order_status, payment_status FROM orders WHERE id = %s FOR UPDATE",
-            (order_id,),
-        )
-        previous = cur.fetchone()
-        if not previous:
-            conn.rollback()
+        try:
+            cur.execute(
+                """
+                SELECT order_status, payment_status, master_telegram_id
+                FROM orders
+                WHERE id = %s
+                """,
+                (order_id,),
+            )
+            order = cur.fetchone()
+        finally:
             cur.close()
             conn.close()
+        if not order:
             bot.answer_callback_query(call.id, "Request not found")
             return
-        old_status, old_payment_status = previous
+        order_status, payment_status, master_id = order
+        if call.from_user.id != master_id and not is_admin(call.from_user.id):
+            bot.answer_callback_query(
+                call.id,
+                "Only the assigned Swapper or an admin can open Dispute",
+                show_alert=True,
+            )
+            return
+        if payment_status in ("GIFT", "PAID"):
+            bot.answer_callback_query(call.id, "Gift was already recorded", show_alert=True)
+            return
+        if payment_status == "DISPUTE" or order_status == "DISPUTE":
+            bot.answer_callback_query(call.id, "Dispute is already open")
+            return
+
+        msg = bot.send_message(
+            call.from_user.id,
+            f"📝 Why did Date Request #{order_id} go to Dispute?\n"
+            "Enter a required comment:",
+        )
+        bot.register_next_step_handler(
+            msg,
+            receive_dispute_comment,
+            order_id,
+            call.message.chat.id,
+            call.message.message_id,
+        )
+        bot.answer_callback_query(call.id, "Enter the reason in private chat")
+    except Exception as e:
+        log("START DISPUTE ERROR", repr(e))
+        notify_admin(f"❌ START DISPUTE ERROR: {repr(e)}")
+
+
+def receive_dispute_comment(message, order_id, source_chat_id, source_message_id):
+    comment = (message.text or "").strip()
+    if len(comment) < 3:
+        msg = bot.send_message(message.chat.id, "Please enter a meaningful comment (at least 3 characters):")
+        bot.register_next_step_handler(
+            msg,
+            receive_dispute_comment,
+            order_id,
+            source_chat_id,
+            source_message_id,
+        )
+        return
+    if len(comment) > 1000:
+        msg = bot.send_message(message.chat.id, "Comment is too long. Maximum: 1000 characters.")
+        bot.register_next_step_handler(
+            msg,
+            receive_dispute_comment,
+            order_id,
+            source_chat_id,
+            source_message_id,
+        )
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT master_telegram_id, payment_status, order_status FROM orders WHERE id = %s",
+            (order_id,),
+        )
+        order = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not order:
+        bot.send_message(message.chat.id, "Request not found")
+        return
+    master_id, payment_status, order_status = order
+    if message.from_user.id != master_id and not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    if payment_status in ("GIFT", "PAID", "DISPUTE") or order_status == "DISPUTE":
+        bot.send_message(message.chat.id, "This request can no longer be moved to Dispute")
+        return
+
+    pending_disputes[message.from_user.id] = {
+        "order_id": order_id,
+        "comment": comment,
+        "source_chat_id": source_chat_id,
+        "source_message_id": source_message_id,
+    }
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(
+            "🚫 Add client to blacklist",
+            callback_data=f"dsp_bl_yes_{order_id}",
+        ),
+        InlineKeyboardButton(
+            "✅ Dispute without blacklist",
+            callback_data=f"dsp_bl_no_{order_id}",
+        ),
+        InlineKeyboardButton(
+            "❌ Cancel Dispute",
+            callback_data=f"dsp_cancel_{order_id}",
+        ),
+    )
+    bot.send_message(
+        message.chat.id,
+        f"""⚠️ Confirm Dispute for Date Request #{order_id}
+
+📝 Reason:
+{comment}
+
+Should this client be added to the blacklist?""",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dsp_cancel_"))
+def cancel_dispute(call):
+    pending_disputes.pop(call.from_user.id, None)
+    bot.edit_message_text("Dispute cancelled", call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("dsp_bl_yes_") or call.data.startswith("dsp_bl_no_")
+)
+def finalize_dispute(call):
+    add_to_blacklist = call.data.startswith("dsp_bl_yes_")
+    order_id = int(call.data.rsplit("_", 1)[1])
+    pending = pending_disputes.get(call.from_user.id)
+    if not pending or pending["order_id"] != order_id:
+        bot.answer_callback_query(call.id, "Dispute request expired. Start again.", show_alert=True)
+        return
+
+    comment = pending["comment"]
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT order_status, payment_status, tg_group_id,
+                   client_telegram_id, client_username, master_telegram_id
+            FROM orders
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+        order = cur.fetchone()
+        if not order:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Request not found", show_alert=True)
+            return
+        (
+            old_status,
+            old_payment_status,
+            group_chat_id,
+            client_id,
+            client_username,
+            master_id,
+        ) = order
+        if call.from_user.id != master_id and not is_admin(call.from_user.id):
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Access denied", show_alert=True)
+            return
+        if old_payment_status in ("GIFT", "PAID", "DISPUTE") or old_status == "DISPUTE":
+            conn.rollback()
+            pending_disputes.pop(call.from_user.id, None)
+            bot.answer_callback_query(call.id, "Status already changed", show_alert=True)
+            return
+
         cur.execute(
             """
             UPDATE orders
             SET payment_status = 'DISPUTE',
-                order_status = 'DISPUTE'
+                order_status = 'DISPUTE',
+                dispute_comment = %s,
+                dispute_blacklisted = %s,
+                dispute_opened_at = NOW()
             WHERE id = %s
-            RETURNING tg_group_id
             """,
-            (order_id,),
+            (comment, add_to_blacklist, order_id),
         )
-        row = cur.fetchone()
-
+        if add_to_blacklist:
+            cur.execute(
+                """
+                INSERT INTO client_blacklist (
+                    client_telegram_id, client_username, reason, order_id,
+                    added_by_telegram_id, added_by_name, is_active, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
+                ON CONFLICT (client_telegram_id) DO UPDATE
+                SET client_username = EXCLUDED.client_username,
+                    reason = EXCLUDED.reason,
+                    order_id = EXCLUDED.order_id,
+                    added_by_telegram_id = EXCLUDED.added_by_telegram_id,
+                    added_by_name = EXCLUDED.added_by_name,
+                    is_active = TRUE,
+                    updated_at = NOW()
+                """,
+                (
+                    client_id,
+                    client_username,
+                    comment,
+                    order_id,
+                    call.from_user.id,
+                    actor_name(call.from_user),
+                ),
+            )
         add_status_history(
             cur, order_id, old_status, "DISPUTE", "DISPUTE", call.from_user
         )
         add_audit(
-            cur, call.from_user.id, actor_name(call.from_user), "OPEN_DISPUTE",
-            "order", order_id,
-            f"{old_status}/{old_payment_status}", "DISPUTE/DISPUTE",
+            cur,
+            call.from_user.id,
+            actor_name(call.from_user),
+            "OPEN_DISPUTE",
+            "order",
+            order_id,
+            f"{old_status}/{old_payment_status}",
+            "DISPUTE/DISPUTE",
+            f"comment={comment}; blacklisted={add_to_blacklist}; client_id={client_id}",
         )
-
+        if add_to_blacklist:
+            add_audit(
+                cur,
+                call.from_user.id,
+                actor_name(call.from_user),
+                "BLACKLIST_CLIENT",
+                "client",
+                client_id,
+                "active=False",
+                "active=True",
+                f"order_id={order_id}; reason={comment}",
+            )
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log("DISPUTE ERROR", repr(e))
+        notify_admin(f"❌ DISPUTE ERROR: {repr(e)}")
+        bot.answer_callback_query(call.id, "Could not open Dispute", show_alert=True)
+        return
+    finally:
         cur.close()
         conn.close()
 
-        group_chat_id = row[0] if row else None
-        if group_chat_id and not str(group_chat_id).startswith("-100"):
-            group_chat_id = int(f"-100{group_chat_id}")
+    pending_disputes.pop(call.from_user.id, None)
+    if group_chat_id and not str(group_chat_id).startswith("-100"):
+        group_chat_id = int(f"-100{group_chat_id}")
+    blacklist_text = "YES 🚫" if add_to_blacklist else "NO"
+    dispute_text = (
+        build_group_status_text(order_id, "DISPUTE", "DISPUTE")
+        + f"\n📝 Dispute reason:\n{comment}\n\n🚫 Client blacklisted: {blacklist_text}"
+    )
 
-        notify_admin(f"⚠️ Date request #{order_id}: dispute opened")
+    bot.edit_message_text(
+        f"""✅ Dispute opened for Date Request #{order_id}
 
-        bot.answer_callback_query(call.id, "Dispute opened")
+📝 Reason:
+{comment}
 
-        dispute_text = build_group_status_text(order_id, "DISPUTE", "DISPUTE")
-
-        try:
-            bot.edit_message_text(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                text=dispute_text,
-            )
-        except Exception as e:
-            log("EDIT DISPUTE CARD ERROR", repr(e))
-
-        if group_chat_id and group_chat_id != call.message.chat.id:
+🚫 Client blacklisted: {blacklist_text}""",
+        call.message.chat.id,
+        call.message.message_id,
+    )
+    bot.answer_callback_query(call.id, "Dispute opened")
+    try:
+        bot.edit_message_text(
+            chat_id=pending["source_chat_id"],
+            message_id=pending["source_message_id"],
+            text=dispute_text,
+        )
+    except Exception as e:
+        log("EDIT DISPUTE CARD ERROR", repr(e))
+        if group_chat_id:
             try:
                 bot.send_message(group_chat_id, dispute_text)
-            except Exception as e:
-                log("SEND DISPUTE CARD TO GROUP ERROR", repr(e))
+            except Exception as send_error:
+                log("SEND DISPUTE CARD TO GROUP ERROR", repr(send_error))
 
-    except Exception as e:
-        log("DISPUTE ERROR", repr(e))
-        notify_admin(f"❌ DISPUTE ERROR: {repr(e)}")
+    notify_admin(
+        f"⚠️ Date request #{order_id}: dispute opened\n"
+        f"By: {actor_name(call.from_user)}\n"
+        f"Client TG ID: {client_id}\n"
+        f"Reason: {comment}\n"
+        f"Client blacklisted: {blacklist_text}"
+    )
 
 
 @app.route("/", methods=["GET"])
