@@ -1,4 +1,5 @@
 import os
+import hashlib
 import queue
 import threading
 import time
@@ -34,6 +35,7 @@ if not RENDER_EXTERNAL_URL:
     raise RuntimeError("RENDER_EXTERNAL_URL is not set")
 
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}"
+WHITELIST_PATH = os.path.join(os.path.dirname(__file__), "whitelist_hashes.txt")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -52,6 +54,32 @@ DB_POOL_MIN_CONNECTIONS = 1
 DB_POOL_MAX_CONNECTIONS = 12
 _db_pool = None
 _db_pool_lock = threading.Lock()
+
+
+def normalize_contact_phone(value):
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0") and len(digits) in (9, 10):
+        digits = "972" + digits[1:]
+    if digits.startswith("972") and len(digits) == 12:
+        return digits
+    return digits if len(digits) >= 8 else None
+
+
+def contact_fingerprint(normalized_phone):
+    if not normalized_phone:
+        return None
+    return hashlib.sha256(normalized_phone.encode("utf-8")).hexdigest()
+
+
+def load_whitelisted_fingerprints():
+    try:
+        with open(WHITELIST_PATH, "r", encoding="utf-8") as whitelist_file:
+            return sorted({line.strip() for line in whitelist_file if line.strip()})
+    except FileNotFoundError:
+        log("WHITELIST FILE NOT FOUND", WHITELIST_PATH)
+        return []
 
 
 def log(*args):
@@ -119,6 +147,8 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS dispute_comment TEXT,
             ADD COLUMN IF NOT EXISTS dispute_blacklisted BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS dispute_opened_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS normalized_contact_phone TEXT,
+            ADD COLUMN IF NOT EXISTS is_returning_client BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             """
@@ -183,6 +213,27 @@ def ensure_balance_schema():
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS known_clients (
+                client_fingerprint TEXT PRIMARY KEY,
+                first_seen_order_id BIGINT,
+                source TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        whitelisted_fingerprints = load_whitelisted_fingerprints()
+        if whitelisted_fingerprints:
+            cur.executemany(
+                """
+                INSERT INTO known_clients (client_fingerprint, source)
+                VALUES (%s, 'Historical whitelist')
+                ON CONFLICT (client_fingerprint) DO NOTHING
+                """,
+                [(fingerprint,) for fingerprint in whitelisted_fingerprints],
+            )
         cur.execute(
             """
             INSERT INTO app_settings (setting_key, setting_value)
@@ -968,7 +1019,8 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.payment_status,
                 o.master_telegram_id,
                 o.dispute_comment,
-                o.dispute_blacklisted
+                o.dispute_blacklisted,
+                o.is_returning_client
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
@@ -1000,7 +1052,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
     (
         lead_id, client_name, username, created_at, status, price, meeting_at,
         time_from, time_to, source, paid_amount, payment_status, master_id,
-        dispute_comment, dispute_blacklisted,
+        dispute_comment, dispute_blacklisted, is_returning_client,
     ) = row
     meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
     username_text = f"@{username}" if username else "—"
@@ -1019,6 +1071,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
             f"\nDispute reason: {dispute_comment}"
             f"\nClient blacklisted: {blacklist_text}"
         )
+    returning_details = "\n🔁 Returning client: YES" if is_returning_client else ""
 
     return f"""📋 Lead #{lead_id}
 
@@ -1032,6 +1085,7 @@ Final amount: {format_money(paid_amount)} USDT
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
+{returning_details}
 {dispute_details}
 
 Status history:
@@ -1706,9 +1760,20 @@ def save_order(message):
     try:
         data = user_data[message.chat.id]
         data["profile_name"] = message.text.strip()
+        normalized_phone = normalize_contact_phone(data["contact_text"])
+        client_fingerprint = contact_fingerprint(normalized_phone)
 
         conn = get_conn()
         cur = conn.cursor()
+
+        is_returning_client = False
+        if client_fingerprint:
+            cur.execute(
+                "SELECT 1 FROM known_clients WHERE client_fingerprint = %s",
+                (client_fingerprint,),
+            )
+            is_returning_client = cur.fetchone() is not None
+        data["is_returning_client"] = is_returning_client
 
         cur.execute(
             """
@@ -1722,11 +1787,13 @@ def save_order(message):
                 time_from,
                 time_to,
                 profile_name,
+                normalized_contact_phone,
+                is_returning_client,
                 status,
                 order_status,
                 payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
             RETURNING id
             """,
             (
@@ -1739,10 +1806,24 @@ def save_order(message):
                 data["time_from"],
                 data["time_to"],
                 data["profile_name"],
+                normalized_phone,
+                is_returning_client,
             ),
         )
 
         order_id = cur.fetchone()[0]
+        if client_fingerprint:
+            cur.execute(
+                """
+                INSERT INTO known_clients (
+                    client_fingerprint, first_seen_order_id, source, updated_at
+                )
+                VALUES (%s, %s, 'Telegram Bot', NOW())
+                ON CONFLICT (client_fingerprint) DO UPDATE
+                SET updated_at = NOW()
+                """,
+                (client_fingerprint, order_id),
+            )
         add_status_history(cur, order_id, None, "NEW", "NO_GIFT", message.from_user)
         add_audit(
             cur,
@@ -1753,6 +1834,7 @@ def save_order(message):
             order_id,
             None,
             "NEW",
+            "returning_client=true" if is_returning_client else "returning_client=false",
         )
         conn.commit()
         cur.close()
@@ -1767,6 +1849,7 @@ def save_order(message):
             f"Date request #{order_id} created and sent.",
         )
 
+        returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
         notify_admin(f"""🆕 New Date Request #{order_id}
 
 Client TG ID: {message.chat.id}
@@ -1777,6 +1860,7 @@ Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Profile: {data['profile_name']}
+{returning_label}
 """)
 
     except Exception as e:
@@ -1803,6 +1887,7 @@ def send_order_to_masters(order_id, data):
     )
     masters = cur.fetchall()
 
+    returning_label = "\n🔁 Returning client" if data.get("is_returning_client") else ""
     text = f"""🆕 New Date Request #{order_id}
 
 Contact: {data['contact_text']}
@@ -1811,6 +1896,7 @@ Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Profile: {data['profile_name']}
+{returning_label}
 """
 
     kb = InlineKeyboardMarkup()
