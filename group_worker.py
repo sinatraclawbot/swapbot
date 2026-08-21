@@ -56,7 +56,8 @@ async def create_group_async(order_id):
                 profile_name,
                 master_telegram_id,
                 payment_status,
-                order_status
+                order_status,
+                is_returning_client
             FROM orders
             WHERE id = %s
             """,
@@ -82,9 +83,10 @@ async def create_group_async(order_id):
             master_telegram_id,
             payment_status,
             order_status,
+            is_returning_client,
         ) = row
 
-        title = f"Date Request #{order_id}"
+        title = f"🔁 Date Request #{order_id}" if is_returning_client else f"Date Request #{order_id}"
 
         result = await client(
             CreateChannelRequest(
@@ -122,6 +124,7 @@ async def create_group_async(order_id):
         client_label = f"@{client_username}" if client_username else str(client_telegram_id)
         master_label = str(master_telegram_id) if master_telegram_id else "—"
 
+        returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
         group_message = f"""📦 Date Request #{order_id}
 
 Date type: {service_type}
@@ -135,6 +138,7 @@ Master ID: {master_label}
 
 Order status: {order_status}
 Payment status: {payment_status}
+{returning_label}
 """
 
         await client(
