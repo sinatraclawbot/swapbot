@@ -57,7 +57,8 @@ async def create_group_async(order_id):
                 master_telegram_id,
                 payment_status,
                 order_status,
-                is_returning_client
+                is_returning_client,
+                is_blacklisted_contact
             FROM orders
             WHERE id = %s
             """,
@@ -84,9 +85,15 @@ async def create_group_async(order_id):
             payment_status,
             order_status,
             is_returning_client,
+            is_blacklisted_contact,
         ) = row
 
-        title = f"🔁 Date Request #{order_id}" if is_returning_client else f"Date Request #{order_id}"
+        title_prefix = ""
+        if is_blacklisted_contact:
+            title_prefix += "🚫 "
+        if is_returning_client:
+            title_prefix += "🔁 "
+        title = f"{title_prefix}Date Request #{order_id}"
 
         result = await client(
             CreateChannelRequest(
@@ -125,6 +132,7 @@ async def create_group_async(order_id):
         master_label = str(master_telegram_id) if master_telegram_id else "—"
 
         returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
+        blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
 Date type: {service_type}
@@ -139,6 +147,7 @@ Master ID: {master_label}
 Order status: {order_status}
 Payment status: {payment_status}
 {returning_label}
+{blacklist_label}
 """
 
         await client(

@@ -149,6 +149,7 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS dispute_opened_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS normalized_contact_phone TEXT,
             ADD COLUMN IF NOT EXISTS is_returning_client BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS is_blacklisted_contact BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             """
@@ -224,6 +225,44 @@ def ensure_balance_schema():
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS blacklisted_contacts (
+                client_fingerprint TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                order_id BIGINT,
+                added_by_telegram_id BIGINT,
+                added_by_name TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            SELECT cb.reason, cb.order_id, cb.added_by_telegram_id, cb.added_by_name,
+                   o.normalized_contact_phone, o.contact_text
+            FROM client_blacklist cb
+            JOIN orders o ON o.id = cb.order_id
+            WHERE cb.is_active = TRUE
+            """
+        )
+        for reason, order_id, added_by_id, added_by_name, normalized_phone, contact_text in cur.fetchall():
+            fingerprint = contact_fingerprint(
+                normalized_phone or normalize_contact_phone(contact_text)
+            )
+            if fingerprint:
+                cur.execute(
+                    """
+                    INSERT INTO blacklisted_contacts (
+                        client_fingerprint, reason, order_id,
+                        added_by_telegram_id, added_by_name, is_active, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, TRUE, NOW())
+                    ON CONFLICT (client_fingerprint) DO NOTHING
+                    """,
+                    (fingerprint, reason, order_id, added_by_id, added_by_name),
+                )
         whitelisted_fingerprints = load_whitelisted_fingerprints()
         if whitelisted_fingerprints:
             cur.executemany(
@@ -1020,7 +1059,8 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.master_telegram_id,
                 o.dispute_comment,
                 o.dispute_blacklisted,
-                o.is_returning_client
+                o.is_returning_client,
+                o.is_blacklisted_contact
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
@@ -1052,7 +1092,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
     (
         lead_id, client_name, username, created_at, status, price, meeting_at,
         time_from, time_to, source, paid_amount, payment_status, master_id,
-        dispute_comment, dispute_blacklisted, is_returning_client,
+        dispute_comment, dispute_blacklisted, is_returning_client, is_blacklisted_contact,
     ) = row
     meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
     username_text = f"@{username}" if username else "—"
@@ -1069,9 +1109,10 @@ def lead_card(order_id, viewer_id, admin_access=False):
         blacklist_text = "YES 🚫" if dispute_blacklisted else "NO"
         dispute_details = (
             f"\nDispute reason: {dispute_comment}"
-            f"\nClient blacklisted: {blacklist_text}"
+            f"\nContact blacklisted: {blacklist_text}"
         )
     returning_details = "\n🔁 Returning client: YES" if is_returning_client else ""
+    blacklist_details = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
 
     return f"""📋 Lead #{lead_id}
 
@@ -1086,6 +1127,7 @@ Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
 {returning_details}
+{blacklist_details}
 {dispute_details}
 
 Status history:
@@ -1658,35 +1700,6 @@ def confirm_topup(call):
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
 def create_order(message):
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT reason, order_id
-            FROM client_blacklist
-            WHERE client_telegram_id = %s
-              AND is_active = TRUE
-            """,
-            (message.from_user.id,),
-        )
-        blacklist_row = cur.fetchone()
-    finally:
-        cur.close()
-        conn.close()
-    if blacklist_row:
-        reason, source_order_id = blacklist_row
-        bot.send_message(
-            message.chat.id,
-            "⛔ You cannot create a new Date Request. Please contact an administrator.",
-        )
-        notify_admin(
-            f"⛔ Blacklisted client tried to create a Date Request\n"
-            f"Client TG ID: {message.from_user.id}\n"
-            f"Blacklist source: request #{source_order_id or '—'}\n"
-            f"Reason: {reason}"
-        )
-        return
     user_data[message.chat.id] = {}
     msg = bot.send_message(message.chat.id, "Enter contact:")
     bot.register_next_step_handler(msg, get_contact)
@@ -1767,13 +1780,23 @@ def save_order(message):
         cur = conn.cursor()
 
         is_returning_client = False
+        is_blacklisted_contact = False
         if client_fingerprint:
             cur.execute(
                 "SELECT 1 FROM known_clients WHERE client_fingerprint = %s",
                 (client_fingerprint,),
             )
             is_returning_client = cur.fetchone() is not None
+            cur.execute(
+                """
+                SELECT 1 FROM blacklisted_contacts
+                WHERE client_fingerprint = %s AND is_active = TRUE
+                """,
+                (client_fingerprint,),
+            )
+            is_blacklisted_contact = cur.fetchone() is not None
         data["is_returning_client"] = is_returning_client
+        data["is_blacklisted_contact"] = is_blacklisted_contact
 
         cur.execute(
             """
@@ -1789,11 +1812,12 @@ def save_order(message):
                 profile_name,
                 normalized_contact_phone,
                 is_returning_client,
+                is_blacklisted_contact,
                 status,
                 order_status,
                 payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
             RETURNING id
             """,
             (
@@ -1808,6 +1832,7 @@ def save_order(message):
                 data["profile_name"],
                 normalized_phone,
                 is_returning_client,
+                is_blacklisted_contact,
             ),
         )
 
@@ -1834,7 +1859,8 @@ def save_order(message):
             order_id,
             None,
             "NEW",
-            "returning_client=true" if is_returning_client else "returning_client=false",
+            f"returning_client={str(is_returning_client).lower()}; "
+            f"blacklisted_contact={str(is_blacklisted_contact).lower()}",
         )
         conn.commit()
         cur.close()
@@ -1850,6 +1876,7 @@ def save_order(message):
         )
 
         returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
+        blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         notify_admin(f"""🆕 New Date Request #{order_id}
 
 Client TG ID: {message.chat.id}
@@ -1861,6 +1888,7 @@ Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Profile: {data['profile_name']}
 {returning_label}
+{blacklist_label}
 """)
 
     except Exception as e:
@@ -1888,6 +1916,7 @@ def send_order_to_masters(order_id, data):
     masters = cur.fetchall()
 
     returning_label = "\n🔁 Returning client" if data.get("is_returning_client") else ""
+    blacklist_label = "\n🚫 Blacklisted contact" if data.get("is_blacklisted_contact") else ""
     text = f"""🆕 New Date Request #{order_id}
 
 Contact: {data['contact_text']}
@@ -1897,6 +1926,7 @@ Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Profile: {data['profile_name']}
 {returning_label}
+{blacklist_label}
 """
 
     kb = InlineKeyboardMarkup()
@@ -2440,7 +2470,7 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(
-            "🚫 Add client to blacklist",
+            "🚫 Add contact to blacklist",
             callback_data=f"dsp_bl_yes_{order_id}",
         ),
         InlineKeyboardButton(
@@ -2459,7 +2489,7 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
 📝 Reason:
 {comment}
 
-Should this client be added to the blacklist?""",
+Should this contact be added to the blacklist?""",
         reply_markup=kb,
     )
 
@@ -2489,7 +2519,8 @@ def finalize_dispute(call):
         cur.execute(
             """
             SELECT order_status, payment_status, tg_group_id,
-                   client_telegram_id, client_username, master_telegram_id
+                   client_telegram_id, client_username, master_telegram_id,
+                   normalized_contact_phone, contact_text
             FROM orders
             WHERE id = %s
             FOR UPDATE
@@ -2508,6 +2539,8 @@ def finalize_dispute(call):
             client_id,
             client_username,
             master_id,
+            normalized_phone,
+            contact_text,
         ) = order
         if call.from_user.id != master_id and not is_admin(call.from_user.id):
             conn.rollback()
@@ -2526,21 +2559,32 @@ def finalize_dispute(call):
                 order_status = 'DISPUTE',
                 dispute_comment = %s,
                 dispute_blacklisted = %s,
+                is_blacklisted_contact = %s,
                 dispute_opened_at = NOW()
             WHERE id = %s
             """,
-            (comment, add_to_blacklist, order_id),
+            (comment, add_to_blacklist, add_to_blacklist, order_id),
         )
         if add_to_blacklist:
+            contact_hash = contact_fingerprint(
+                normalized_phone or normalize_contact_phone(contact_text)
+            )
+            if not contact_hash:
+                conn.rollback()
+                bot.answer_callback_query(
+                    call.id,
+                    "The contact does not contain a valid phone number",
+                    show_alert=True,
+                )
+                return
             cur.execute(
                 """
-                INSERT INTO client_blacklist (
-                    client_telegram_id, client_username, reason, order_id,
+                INSERT INTO blacklisted_contacts (
+                    client_fingerprint, reason, order_id,
                     added_by_telegram_id, added_by_name, is_active, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
-                ON CONFLICT (client_telegram_id) DO UPDATE
-                SET client_username = EXCLUDED.client_username,
-                    reason = EXCLUDED.reason,
+                ) VALUES (%s, %s, %s, %s, %s, TRUE, NOW())
+                ON CONFLICT (client_fingerprint) DO UPDATE
+                SET reason = EXCLUDED.reason,
                     order_id = EXCLUDED.order_id,
                     added_by_telegram_id = EXCLUDED.added_by_telegram_id,
                     added_by_name = EXCLUDED.added_by_name,
@@ -2548,8 +2592,7 @@ def finalize_dispute(call):
                     updated_at = NOW()
                 """,
                 (
-                    client_id,
-                    client_username,
+                    contact_hash,
                     comment,
                     order_id,
                     call.from_user.id,
@@ -2568,16 +2611,16 @@ def finalize_dispute(call):
             order_id,
             f"{old_status}/{old_payment_status}",
             "DISPUTE/DISPUTE",
-            f"comment={comment}; blacklisted={add_to_blacklist}; client_id={client_id}",
+            f"comment={comment}; contact_blacklisted={add_to_blacklist}",
         )
         if add_to_blacklist:
             add_audit(
                 cur,
                 call.from_user.id,
                 actor_name(call.from_user),
-                "BLACKLIST_CLIENT",
-                "client",
-                client_id,
+                "BLACKLIST_CONTACT",
+                "contact_fingerprint",
+                contact_hash,
                 "active=False",
                 "active=True",
                 f"order_id={order_id}; reason={comment}",
@@ -2599,7 +2642,7 @@ def finalize_dispute(call):
     blacklist_text = "YES 🚫" if add_to_blacklist else "NO"
     dispute_text = (
         build_group_status_text(order_id, "DISPUTE", "DISPUTE")
-        + f"\n📝 Dispute reason:\n{comment}\n\n🚫 Client blacklisted: {blacklist_text}"
+        + f"\n📝 Dispute reason:\n{comment}\n\n🚫 Contact blacklisted: {blacklist_text}"
     )
 
     bot.edit_message_text(
@@ -2608,7 +2651,7 @@ def finalize_dispute(call):
 📝 Reason:
 {comment}
 
-🚫 Client blacklisted: {blacklist_text}""",
+🚫 Contact blacklisted: {blacklist_text}""",
         call.message.chat.id,
         call.message.message_id,
     )
@@ -2630,9 +2673,9 @@ def finalize_dispute(call):
     notify_admin(
         f"⚠️ Date request #{order_id}: dispute opened\n"
         f"By: {actor_name(call.from_user)}\n"
-        f"Client TG ID: {client_id}\n"
+        f"Request creator TG ID: {client_id}\n"
         f"Reason: {comment}\n"
-        f"Client blacklisted: {blacklist_text}"
+        f"Contact blacklisted: {blacklist_text}"
     )
 
 
