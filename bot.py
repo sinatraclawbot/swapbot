@@ -2061,7 +2061,7 @@ def group_deletion_worker():
         try:
             for attempt in range(1, 4):
                 try:
-                    delete_order_group(group_chat_id)
+                    delete_order_group(order_id, group_chat_id)
                     log("DATE REQUEST GROUP DELETED", order_id, group_chat_id)
                     break
                 except Exception as e:
