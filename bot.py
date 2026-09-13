@@ -1075,7 +1075,13 @@ def lead_card(order_id, viewer_id, admin_access=False):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        ownership = "TRUE" if admin_access else "o.master_telegram_id = %s"
+        ownership = (
+            "TRUE"
+            if admin_access
+            else "o.master_telegram_id = %s AND o.created_at >= ("
+                 "SELECT setting_value::TIMESTAMPTZ FROM app_settings "
+                 "WHERE setting_key = 'statistics_started_at_gift_v1')"
+        )
         params = (order_id,) if admin_access else (order_id, viewer_id)
         cur.execute(
             f"""
@@ -1100,10 +1106,6 @@ def lead_card(order_id, viewer_id, admin_access=False):
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
-              AND o.created_at >= (
-                  SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                  WHERE setting_key = 'statistics_started_at_gift_v1'
-              )
             """,
             params,
         )
@@ -1231,6 +1233,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
+    kb.add(InlineKeyboardButton("📋 CRM", callback_data="adm_crm"))
     kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     return kb
@@ -1250,6 +1253,45 @@ def show_admin_panel(message):
         bot.send_message(message.chat.id, "Access denied")
         return
     bot.send_message(message.chat.id, "🛠 Admin Panel", reply_markup=admin_panel_keyboard())
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_crm")
+def show_admin_crm(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, created_at, COALESCE(order_status, status, '—'),
+                   COALESCE(paid_amount, price, 0), master_telegram_id
+            FROM orders
+            ORDER BY created_at DESC, id DESC
+            LIMIT 20
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        bot.send_message(call.message.chat.id, "📋 CRM is empty")
+        bot.answer_callback_query(call.id)
+        return
+
+    kb = InlineKeyboardMarkup(row_width=1)
+    for order_id, created_at, status, amount, master_id in rows:
+        kb.add(
+            InlineKeyboardButton(
+                f"#{order_id} · {created_at.strftime('%Y-%m-%d')} · "
+                f"{status} · {format_money(amount)} · 🔄 {master_id or '—'}",
+                callback_data=f"adm_lead_{order_id}",
+            )
+        )
+    bot.send_message(call.message.chat.id, "📋 CRM — latest Date Requests:", reply_markup=kb)
+    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_stats")
