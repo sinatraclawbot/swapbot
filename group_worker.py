@@ -5,11 +5,12 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
+    DeleteChannelRequest,
     EditAdminRequest,
     InviteToChannelRequest,
 )
 from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
-from telethon.tl.types import ChatAdminRights
+from telethon.tl.types import ChatAdminRights, PeerChannel
 
 TG_API_ID_RAW = os.getenv("TG_API_ID")
 TG_API_HASH = os.getenv("TG_API_HASH")
@@ -197,5 +198,27 @@ def create_order_group(order_id):
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(create_group_async(order_id))
+    finally:
+        loop.close()
+
+async def delete_group_async(group_chat_id):
+    channel_id = abs(int(group_chat_id))
+    if str(channel_id).startswith("100"):
+        channel_id = int(str(channel_id)[3:])
+
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING),
+        TG_API_ID,
+        TG_API_HASH,
+    ) as client:
+        channel = await client.get_input_entity(PeerChannel(channel_id))
+        await client(DeleteChannelRequest(channel=channel))
+
+
+def delete_order_group(group_chat_id):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(delete_group_async(group_chat_id))
     finally:
         loop.close()
