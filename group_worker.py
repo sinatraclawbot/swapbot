@@ -9,7 +9,11 @@ from telethon.tl.functions.channels import (
     EditAdminRequest,
     InviteToChannelRequest,
 )
-from telethon.tl.functions.messages import ExportChatInviteRequest, SendMessageRequest
+from telethon.tl.functions.messages import (
+    CheckChatInviteRequest,
+    ExportChatInviteRequest,
+    SendMessageRequest,
+)
 from telethon.tl.types import ChatAdminRights, PeerChannel
 
 TG_API_ID_RAW = os.getenv("TG_API_ID")
@@ -201,24 +205,40 @@ def create_order_group(order_id):
     finally:
         loop.close()
 
-async def delete_group_async(group_chat_id):
+async def delete_group_async(order_id, group_chat_id):
     channel_id = abs(int(group_chat_id))
     if str(channel_id).startswith("100"):
         channel_id = int(str(channel_id)[3:])
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT invite_link FROM orders WHERE id = %s", (order_id,))
+        row = cur.fetchone()
+        invite_link = row[0] if row else None
+    finally:
+        cur.close()
+        conn.close()
 
     async with TelegramClient(
         StringSession(TG_SESSION_STRING),
         TG_API_ID,
         TG_API_HASH,
     ) as client:
-        channel = await client.get_input_entity(PeerChannel(channel_id))
+        channel = None
+        if invite_link:
+            invite_hash = invite_link.rstrip("/").rsplit("/", 1)[-1].lstrip("+")
+            invite = await client(CheckChatInviteRequest(invite_hash))
+            channel = getattr(invite, "chat", None)
+        if channel is None:
+            channel = await client.get_input_entity(PeerChannel(channel_id))
         await client(DeleteChannelRequest(channel=channel))
 
 
-def delete_order_group(group_chat_id):
+def delete_order_group(order_id, group_chat_id):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(delete_group_async(group_chat_id))
+        loop.run_until_complete(delete_group_async(order_id, group_chat_id))
     finally:
         loop.close()
