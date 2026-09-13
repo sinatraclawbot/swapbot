@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from zoneinfo import ZoneInfo
 import telebot
 import psycopg2
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE
@@ -777,6 +778,23 @@ def format_money(value):
     return f"{Decimal(value or 0).quantize(Decimal('0.01'))}"
 
 
+def wallet_cycle_start_sql():
+    return """
+        CASE
+            WHEN EXTRACT(DAY FROM (NOW() AT TIME ZONE 'Asia/Jerusalem')) >= 8
+            THEN (
+                date_trunc('month', NOW() AT TIME ZONE 'Asia/Jerusalem')
+                + INTERVAL '7 days'
+            ) AT TIME ZONE 'Asia/Jerusalem'
+            ELSE (
+                date_trunc('month', NOW() AT TIME ZONE 'Asia/Jerusalem')
+                - INTERVAL '1 month'
+                + INTERVAL '7 days'
+            ) AT TIME ZONE 'Asia/Jerusalem'
+        END
+    """
+
+
 def master_statistics(master_id, period):
     condition, label = period_condition(period)
     conn = get_conn()
@@ -863,15 +881,24 @@ def get_balance(message):
 
         conn = get_conn()
         cur = conn.cursor()
+        cycle_start = wallet_cycle_start_sql()
         cur.execute(
-            """
+            f"""
             SELECT
                 m.balance,
-                COALESCE(SUM(o.paid_amount), 0) AS total_gift
+                COALESCE(SUM(o.paid_amount), 0) AS total_gift,
+                {cycle_start} AS cycle_started_at
             FROM masters m
             LEFT JOIN orders o
               ON o.master_telegram_id = m.telegram_id
              AND o.payment_status = 'GIFT'
+             AND EXISTS (
+                 SELECT 1
+                 FROM order_status_history gift_history
+                 WHERE gift_history.order_id = o.id
+                   AND gift_history.payment_status = 'GIFT'
+                   AND gift_history.created_at >= {cycle_start}
+             )
             WHERE m.telegram_id = %s
             GROUP BY m.telegram_id, m.balance
             """,
@@ -884,16 +911,21 @@ def get_balance(message):
         if not row:
             bot.send_message(message.chat.id, "🔄 Swapper account not found")
             return
-        balance, total_gift = row
+        balance, total_gift, cycle_started_at = row
+        cycle_label = cycle_started_at.astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d")
         if target_id == message.from_user.id:
             bot.send_message(
                 message.chat.id,
-                f"💼 Wallet\nBalance: {balance} USDT\n🎁 Total Gift: {total_gift} USDT",
+                f"💼 Wallet\nBalance: {balance} USDT\n"
+                f"🎁 Total Gift: {total_gift} USDT\n"
+                f"📅 Gift cycle: since {cycle_label}",
             )
         else:
             bot.send_message(
                 message.chat.id,
-                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n🎁 Total Gift: {total_gift} USDT",
+                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n"
+                f"🎁 Total Gift: {total_gift} USDT\n"
+                f"📅 Gift cycle: since {cycle_label}",
             )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
