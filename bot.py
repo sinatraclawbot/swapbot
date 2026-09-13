@@ -17,6 +17,7 @@ from telebot.types import (
     InlineKeyboardButton,
 )
 from group_worker import create_order_group
+group_deletion_queue = queue.Queue()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -43,6 +44,39 @@ app = Flask(__name__)
 user_data = {}
 admin_topups = {}
 pending_disputes = {}
+def group_deletion_worker():
+    while True:
+        order_id, group_chat_id = group_deletion_queue.get()
+        try:
+            for attempt in range(1, 4):
+                try:
+                    delete_order_group(group_chat_id)
+                    log("DATE REQUEST GROUP DELETED", order_id, group_chat_id)
+                    break
+                except Exception as e:
+                    log(
+                        "DATE REQUEST GROUP DELETE ERROR",
+                        order_id,
+                        group_chat_id,
+                        f"attempt={attempt}",
+                        repr(e),
+                    )
+                    if attempt == 3:
+                        notify_admin(
+                            f"❌ Could not delete Telegram group for Date Request #{order_id}. "
+                            "The lead and its history remain in CRM."
+                        )
+                    else:
+                        time.sleep(2 * attempt)
+        finally:
+            group_deletion_queue.task_done()
+
+
+def queue_group_deletion(order_id, group_chat_id):
+    if group_chat_id:
+        group_deletion_queue.put((order_id, group_chat_id))
+
+
 group_creation_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
@@ -1457,7 +1491,7 @@ def show_admin_audit(call):
     cur = conn.cursor()
     try:
         cur.execute(
-            """
+            """from group_worker import create_order_group, delete_order_group
             SELECT actor_name, action, entity_type, entity_id,
                    old_value, new_value, created_at
             FROM audit_log ORDER BY created_at DESC LIMIT 30
@@ -2056,6 +2090,7 @@ def group_creation_worker():
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
+    queue_group_deletion(order_id, group_chat_id or source_group_id)
     try:
         log("ACCEPT HANDLER FIRED", call.data, call.from_user.id)
 
@@ -2313,6 +2348,7 @@ def save_paid_amount(message, order_id, source_group_id):
         f"🔄 Swapper fee (30%): {commission} USDT\n"
         f"💼 Swapper balance: {master_balance} USDT"
     )
+    queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("done_"))
@@ -2709,6 +2745,7 @@ def finalize_dispute(call):
         f"Request creator TG ID: {client_id}\n"
         f"Reason: {comment}\n"
         f"Contact blacklisted: {blacklist_text}"
+        threading.Thread(target=group_deletion_worker, daemon=True).start()
     )
 
 
