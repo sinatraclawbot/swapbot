@@ -754,16 +754,19 @@ def period_keyboard(prefix):
         InlineKeyboardButton("Today", callback_data=f"{prefix}_today"),
         InlineKeyboardButton("7 days", callback_data=f"{prefix}_7d"),
         InlineKeyboardButton("30 days", callback_data=f"{prefix}_30d"),
-        InlineKeyboardButton("All time", callback_data=f"{prefix}_all"),
+        InlineKeyboardButton("From 8th", callback_data=f"{prefix}_all"),
     )
     return kb
 
 
 def period_condition(period, column="o.created_at"):
-    statistics_start = """
-        (SELECT setting_value::TIMESTAMPTZ
-         FROM app_settings
-         WHERE setting_key = 'statistics_started_at_gift_v1')
+    statistics_start = f"""
+        GREATEST(
+            (SELECT setting_value::TIMESTAMPTZ
+             FROM app_settings
+             WHERE setting_key = 'statistics_started_at_gift_v1'),
+            {wallet_cycle_start_sql()}
+        )
     """
     if period == "today":
         return f"{column} >= GREATEST(CURRENT_DATE, {statistics_start})", "Today"
@@ -771,7 +774,7 @@ def period_condition(period, column="o.created_at"):
         return f"{column} >= GREATEST(NOW() - INTERVAL '7 days', {statistics_start})", "Last 7 days"
     if period == "30d":
         return f"{column} >= GREATEST(NOW() - INTERVAL '30 days', {statistics_start})", "Last 30 days"
-    return f"{column} >= {statistics_start}", "All time"
+    return f"{column} >= {statistics_start}", "Current cycle (from the 8th)"
 
 
 def format_money(value):
@@ -1255,18 +1258,16 @@ def show_admin_statistics(call):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cycle_start = wallet_cycle_start_sql()
         cur.execute(
-            """
+            f"""
             SELECT
                 COUNT(*),
                 COUNT(*) FILTER (WHERE master_telegram_id IS NOT NULL),
                 COALESCE(SUM(paid_amount) FILTER (WHERE payment_status = 'GIFT'), 0),
                 COALESCE(AVG(paid_amount) FILTER (WHERE payment_status = 'GIFT'), 0)
             FROM orders
-            WHERE created_at >= (
-                SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                WHERE setting_key = 'statistics_started_at_gift_v1'
-            )
+            WHERE created_at >= {cycle_start}
             """
         )
         total_leads, dates, revenue, average = cur.fetchone()
@@ -1278,7 +1279,7 @@ def show_admin_statistics(call):
         cur.close()
         conn.close()
 
-    text = f"""📈 System statistics
+    text = f"""📈 System statistics — current cycle from the 8th
 
 Total leads: {total_leads}
 Date assigned: {dates}
@@ -1409,6 +1410,7 @@ def show_admin_top(call):
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cycle_start = wallet_cycle_start_sql()
         cur.execute(
             f"""
             SELECT * FROM (
@@ -1422,10 +1424,7 @@ def show_admin_top(call):
                 FROM masters m
                 LEFT JOIN orders o
                   ON o.master_telegram_id = m.telegram_id
-                 AND o.created_at >= (
-                     SELECT setting_value::TIMESTAMPTZ FROM app_settings
-                     WHERE setting_key = 'statistics_started_at_gift_v1'
-                 )
+                 AND o.created_at >= {cycle_start}
                 WHERE m.is_active = TRUE
                 GROUP BY m.telegram_id
             ) ranked
@@ -1438,7 +1437,9 @@ def show_admin_top(call):
         cur.close()
         conn.close()
     titles = {"rev": "revenue", "date": "Gift leads", "conv": "conversion"}
-    lines = [f"🏆🔄 TOP Swappers by {titles.get(ranking, 'revenue')}"]
+    lines = [
+        f"🏆🔄 TOP Swappers by {titles.get(ranking, 'revenue')} — current cycle from the 8th"
+    ]
     for index, (master_id, paid_leads, revenue, conversion) in enumerate(rows, start=1):
         lines.append(
             f"{index}. {master_id} — {format_money(revenue)} USDT, "
