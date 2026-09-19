@@ -40,7 +40,8 @@ if not DATABASE_URL:
 if not RENDER_EXTERNAL_URL:
     raise RuntimeError("RENDER_EXTERNAL_URL is not set")
 
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH_SECRET = hashlib.sha256(BOT_TOKEN.encode("utf-8")).hexdigest()[:32]
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook/{WEBHOOK_PATH_SECRET}"
 WHITELIST_PATH = os.path.join(os.path.dirname(__file__), "whitelist_hashes.txt")
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -2848,7 +2849,7 @@ def index():
     return "Bot is running", 200
 
 
-@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+@app.route(f"/webhook/{WEBHOOK_PATH_SECRET}", methods=["POST"])
 def webhook():
     try:
         json_str = request.get_data().decode("utf-8")
@@ -2980,7 +2981,7 @@ def send_unresolved_lead_reminders():
             conn.commit()
 
             for order_id, master_id, invite_link in leads:
-                group_line = f"\n\ud83d\udc49 Open group: {invite_link}" if invite_link else ""
+                group_line = f"\n👉 Open group: {invite_link}" if invite_link else ""
                 try:
                     bot.send_message(
                         master_id,
