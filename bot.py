@@ -1151,6 +1151,12 @@ def lead_card(order_id, viewer_id, admin_access=False):
         )
     returning_details = "\n🔁 Returning client: YES" if is_returning_client else ""
     blacklist_details = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
+    final_amount_text = f"{format_money(paid_amount)} USDT" if paid_amount is not None else "—"
+    difference_text = (
+        f"{format_money(Decimal(paid_amount) - Decimal(price or 0))} USDT"
+        if paid_amount is not None
+        else "—"
+    )
 
     return f"""📋 Lead #{lead_id}
 
@@ -1160,7 +1166,8 @@ Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
 Payment: {payment_status or '—'}
 Initial price: {format_money(price)} USDT
-Final amount: {format_money(paid_amount)} USDT
+Final amount: {final_amount_text}
+Difference: {difference_text}
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
@@ -1265,7 +1272,7 @@ def show_admin_crm(call):
         cur.execute(
             """
             SELECT id, created_at, COALESCE(order_status, status, '—'),
-                   COALESCE(paid_amount, price, 0), master_telegram_id
+                   price, paid_amount, master_telegram_id
             FROM orders
             ORDER BY created_at DESC, id DESC
             LIMIT 20
@@ -1282,11 +1289,18 @@ def show_admin_crm(call):
         return
 
     kb = InlineKeyboardMarkup(row_width=1)
-    for order_id, created_at, status, amount, master_id in rows:
+    for order_id, created_at, status, initial_price, paid_amount, master_id in rows:
+        paid_text = format_money(paid_amount) if paid_amount is not None else "—"
+        difference_text = (
+            format_money(Decimal(paid_amount) - Decimal(initial_price or 0))
+            if paid_amount is not None
+            else "—"
+        )
         kb.add(
             InlineKeyboardButton(
                 f"#{order_id} · {created_at.strftime('%Y-%m-%d')} · "
-                f"{status} · {format_money(amount)} · 🔄 {master_id or '—'}",
+                f"{status} · {format_money(initial_price)}→{paid_text} · "
+                f"Δ {difference_text} · 🔄 {master_id or '—'}",
                 callback_data=f"adm_lead_{order_id}",
             )
         )
