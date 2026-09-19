@@ -16,7 +16,12 @@ from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from group_worker import create_order_group, delete_order_group
+from group_worker import (
+    create_order_group,
+    delete_order_group,
+    ensure_dispute_channel,
+    send_dispute_to_channel,
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -45,6 +50,7 @@ admin_topups = {}
 pending_disputes = {}
 group_creation_queue = queue.Queue()
 group_deletion_queue = queue.Queue()
+dispute_channel_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
@@ -2144,6 +2150,38 @@ def queue_group_deletion(order_id, group_chat_id):
         group_deletion_queue.put((order_id, group_chat_id))
 
 
+def dispute_channel_worker():
+    while True:
+        order_id = dispute_channel_queue.get()
+        try:
+            send_dispute_to_channel(order_id)
+            log("DISPUTE SENT TO CHANNEL", order_id)
+        except Exception as e:
+            log("DISPUTE CHANNEL SEND ERROR", order_id, repr(e))
+            notify_admin(f"❌ Could not send Dispute #{order_id} to the Disputes channel")
+        finally:
+            dispute_channel_queue.task_done()
+
+
+def prepare_dispute_channel():
+    try:
+        invite_link, _, _, created = ensure_dispute_channel()
+        if created:
+            for admin_id in FULL_ADMIN_IDS:
+                try:
+                    bot.send_message(
+                        admin_id,
+                        "⚠️ SwapDate Disputes channel created. "
+                        f"Open and join it here:\n{invite_link}",
+                    )
+                except Exception as e:
+                    log("DISPUTE CHANNEL INVITE ERROR", admin_id, repr(e))
+        log("DISPUTE CHANNEL READY", invite_link)
+    except Exception as e:
+        log("DISPUTE CHANNEL SETUP ERROR", repr(e))
+        notify_admin(f"❌ Could not prepare the Disputes channel: {repr(e)}")
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
     try:
@@ -2801,6 +2839,7 @@ def finalize_dispute(call):
         f"Reason: {comment}\n"
         f"Contact blacklisted: {blacklist_text}"
     )
+    dispute_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
 
 
@@ -3006,6 +3045,8 @@ threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
 threading.Thread(target=lead_dispatch_worker, daemon=True).start()
 threading.Thread(target=group_creation_worker, daemon=True).start()
 threading.Thread(target=group_deletion_worker, daemon=True).start()
+threading.Thread(target=dispute_channel_worker, daemon=True).start()
+threading.Thread(target=prepare_dispute_channel, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))

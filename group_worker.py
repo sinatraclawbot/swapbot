@@ -14,7 +14,7 @@ from telethon.tl.functions.messages import (
     ExportChatInviteRequest,
     SendMessageRequest,
 )
-from telethon.tl.types import ChatAdminRights, PeerChannel
+from telethon.tl.types import ChatAdminRights, InputChannel, PeerChannel
 
 TG_API_ID_RAW = os.getenv("TG_API_ID")
 TG_API_HASH = os.getenv("TG_API_HASH")
@@ -36,6 +36,167 @@ TG_API_ID = int(TG_API_ID_RAW)
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
+
+
+def dispute_message(row):
+    (
+        order_id,
+        client_username,
+        client_telegram_id,
+        contact_text,
+        master_telegram_id,
+        dispute_comment,
+        dispute_blacklisted,
+        created_at,
+        dispute_opened_at,
+    ) = row
+    client = f"@{client_username}" if client_username else str(client_telegram_id or "—")
+    opened = dispute_opened_at or created_at
+    opened_text = opened.strftime("%Y-%m-%d %H:%M") if opened else "—"
+    return f"""⚠️ Dispute — Date Request #{order_id}
+
+🔄 Swapper: {master_telegram_id or '—'}
+👤 Client: {client}
+📞 Contact: {contact_text or '—'}
+📝 Reason: {dispute_comment or '—'}
+🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
+🕒 Opened: {opened_text}"""
+
+
+async def ensure_dispute_channel_async():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM app_settings
+            WHERE setting_key IN (
+                'dispute_channel_id_v1',
+                'dispute_channel_access_hash_v1',
+                'dispute_channel_invite_link_v1'
+            )
+            """
+        )
+        settings = dict(cur.fetchall())
+        channel_id = settings.get("dispute_channel_id_v1")
+        access_hash = settings.get("dispute_channel_access_hash_v1")
+        invite_link = settings.get("dispute_channel_invite_link_v1")
+
+        async with TelegramClient(
+            StringSession(TG_SESSION_STRING),
+            TG_API_ID,
+            TG_API_HASH,
+        ) as client:
+            if channel_id and access_hash and invite_link:
+                return invite_link, int(channel_id), int(access_hash), False
+
+            result = await client(
+                CreateChannelRequest(
+                    title="⚠️ SwapDate Disputes",
+                    about="Private archive of all SwapDate disputes",
+                    broadcast=True,
+                    megagroup=False,
+                )
+            )
+            channel = result.chats[0]
+            invite = await client(ExportChatInviteRequest(channel))
+            invite_link = invite.link
+
+            settings_to_save = (
+                ("dispute_channel_id_v1", str(channel.id)),
+                ("dispute_channel_access_hash_v1", str(channel.access_hash)),
+                ("dispute_channel_invite_link_v1", invite_link),
+            )
+            cur.executemany(
+                """
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES (%s, %s)
+                ON CONFLICT (setting_key) DO UPDATE
+                SET setting_value = EXCLUDED.setting_value
+                """,
+                settings_to_save,
+            )
+            conn.commit()
+
+            cur.execute(
+                """
+                SELECT id, client_username, client_telegram_id, contact_text,
+                       master_telegram_id, dispute_comment, dispute_blacklisted,
+                       created_at, dispute_opened_at
+                FROM orders
+                WHERE payment_status = 'DISPUTE' OR order_status = 'DISPUTE'
+                ORDER BY COALESCE(dispute_opened_at, created_at), id
+                """
+            )
+            for row in cur.fetchall():
+                await client(
+                    SendMessageRequest(
+                        peer=channel,
+                        message=dispute_message(row),
+                    )
+                )
+
+            return invite_link, channel.id, channel.access_hash, True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_dispute_channel():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(ensure_dispute_channel_async())
+    finally:
+        loop.close()
+
+
+async def send_dispute_to_channel_async(order_id):
+    _, channel_id, access_hash, _ = await ensure_dispute_channel_async()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, client_username, client_telegram_id, contact_text,
+                   master_telegram_id, dispute_comment, dispute_blacklisted,
+                   created_at, dispute_opened_at
+            FROM orders
+            WHERE id = %s
+            """,
+            (order_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Order #{order_id} not found")
+    finally:
+        cur.close()
+        conn.close()
+
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING),
+        TG_API_ID,
+        TG_API_HASH,
+    ) as client:
+        await client(
+            SendMessageRequest(
+                peer=InputChannel(channel_id, access_hash),
+                message=dispute_message(row),
+            )
+        )
+
+
+def send_dispute_to_channel(order_id):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(send_dispute_to_channel_async(order_id))
+    finally:
+        loop.close()
 
 
 async def create_group_async(order_id):
