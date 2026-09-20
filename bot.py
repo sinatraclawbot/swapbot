@@ -2642,15 +2642,28 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
         "source_message_id": source_message_id,
     }
     kb = InlineKeyboardMarkup(row_width=1)
+    can_manage_blacklist = message.from_user.id == master_id or is_admin(message.from_user.id)
+    if can_manage_blacklist:
+        kb.add(
+            InlineKeyboardButton(
+                "🚫 Add contact to blacklist",
+                callback_data=f"dsp_bl_yes_{order_id}",
+            ),
+            InlineKeyboardButton(
+                "✅ Dispute without blacklist",
+                callback_data=f"dsp_bl_no_{order_id}",
+            ),
+        )
+        confirmation_question = "Should this contact be added to the blacklist?"
+    else:
+        kb.add(
+            InlineKeyboardButton(
+                "✅ Confirm Dispute",
+                callback_data=f"dsp_bl_no_{order_id}",
+            ),
+        )
+        confirmation_question = "Confirm this Dispute?"
     kb.add(
-        InlineKeyboardButton(
-            "🚫 Add contact to blacklist",
-            callback_data=f"dsp_bl_yes_{order_id}",
-        ),
-        InlineKeyboardButton(
-            "✅ Dispute without blacklist",
-            callback_data=f"dsp_bl_no_{order_id}",
-        ),
         InlineKeyboardButton(
             "❌ Cancel Dispute",
             callback_data=f"dsp_cancel_{order_id}",
@@ -2663,7 +2676,7 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
 📝 Reason:
 {comment}
 
-Should this contact be added to the blacklist?""",
+{confirmation_question}""",
         reply_markup=kb,
     )
 
@@ -2719,6 +2732,14 @@ def finalize_dispute(call):
         if call.from_user.id not in (master_id, client_id) and not is_admin(call.from_user.id):
             conn.rollback()
             bot.answer_callback_query(call.id, "Access denied", show_alert=True)
+            return
+        if add_to_blacklist and call.from_user.id != master_id and not is_admin(call.from_user.id):
+            conn.rollback()
+            bot.answer_callback_query(
+                call.id,
+                "Only the Swapper or an admin can add contacts to blacklist",
+                show_alert=True,
+            )
             return
         if old_payment_status in ("GIFT", "PAID", "DISPUTE") or old_status == "DISPUTE":
             conn.rollback()
