@@ -56,7 +56,7 @@ def dispute_message(row):
     return f"""⚠️ Dispute — Date Request #{order_id}
 
 🔄 Swapper: {master_telegram_id or '—'}
-👤 Client: {client}
+👤 Operator: {client}
 📞 Contact: {contact_text or '—'}
 📝 Reason: {dispute_comment or '—'}
 🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
@@ -297,13 +297,13 @@ async def create_group_async(order_id):
         client_label = f"@{client_username}" if client_username else str(client_telegram_id)
         master_label = str(master_telegram_id) if master_telegram_id else "—"
 
-        returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
+        returning_label = "\n🔁 Returning Operator: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
 Date type: {service_type}
 Price: {price} USDT
-Client: {client_label}
+Operator: {client_label}
 Contact: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}

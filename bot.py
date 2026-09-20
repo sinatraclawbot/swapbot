@@ -1156,7 +1156,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
             f"\nDispute reason: {dispute_comment}"
             f"\nContact blacklisted: {blacklist_text}"
         )
-    returning_details = "\n🔁 Returning client: YES" if is_returning_client else ""
+    returning_details = "\n🔁 Returning Operator: YES" if is_returning_client else ""
     blacklist_details = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
     final_amount_text = f"{format_money(paid_amount)} USDT" if paid_amount is not None else "—"
     difference_text = (
@@ -1167,7 +1167,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
 
     return f"""📋 Lead #{lead_id}
 
-Client: {client_name}
+Operator: {client_name}
 Telegram: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
@@ -1972,12 +1972,12 @@ def save_order(message):
             f"Date request #{order_id} created and sent.",
         )
 
-        returning_label = "\n🔁 Returning client: YES" if is_returning_client else ""
+        returning_label = "\n🔁 Returning Operator: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         notify_admin(f"""🆕 New Date Request #{order_id}
 
-Client TG ID: {message.chat.id}
-Client username: @{message.from_user.username if message.from_user.username else 'none'}
+Operator TG ID: {message.chat.id}
+Operator username: @{message.from_user.username if message.from_user.username else 'none'}
 Contact: {data['contact_text']}
 Date type: {data['date_type']}
 Price: {data['price']} USDT
@@ -2012,7 +2012,7 @@ def send_order_to_masters(order_id, data):
     )
     masters = cur.fetchall()
 
-    returning_label = "\n🔁 Returning client" if data.get("is_returning_client") else ""
+    returning_label = "\n🔁 Returning Operator" if data.get("is_returning_client") else ""
     blacklist_label = "\n🚫 Blacklisted contact" if data.get("is_blacklisted_contact") else ""
     text = f"""🆕 New Date Request #{order_id}
 
@@ -2064,7 +2064,7 @@ def complete_accepted_order_group(order_id, master_id, client_id):
         notify_admin(f"""✅ Group created for Date Request #{order_id}
 
 🔄 Swapper TG ID: {master_id}
-Client TG ID: {client_id}
+Operator TG ID: {client_id}
 Group ID: {group_chat_id}
 Invite: {invite_link}
 """)
@@ -2076,7 +2076,7 @@ Invite: {invite_link}
             )
         except Exception as e:
             log("SEND TO CLIENT ERROR", repr(e))
-            notify_admin(f"❌ Could not send invite to client for request #{order_id}: {repr(e)}")
+            notify_admin(f"❌ Could not send invite to Operator for request #{order_id}: {repr(e)}")
 
         try:
             bot.send_message(
@@ -2249,7 +2249,7 @@ def accept_order(call):
         group_creation_queue.put((order_id, master_id, client_id))
         notify_admin(
             f"✅ Swapper accepted request #{order_id}\n"
-            f"🔄 Swapper TG ID: {master_id}\nClient TG ID: {client_id}"
+            f"🔄 Swapper TG ID: {master_id}\nOperator TG ID: {client_id}"
         )
 
     except Exception as e:
@@ -2533,7 +2533,7 @@ def start_dispute(call):
         try:
             cur.execute(
                 """
-                SELECT order_status, payment_status, master_telegram_id
+                SELECT order_status, payment_status, master_telegram_id, client_telegram_id
                 FROM orders
                 WHERE id = %s
                 """,
@@ -2546,11 +2546,11 @@ def start_dispute(call):
         if not order:
             bot.answer_callback_query(call.id, "Request not found")
             return
-        order_status, payment_status, master_id = order
-        if call.from_user.id != master_id and not is_admin(call.from_user.id):
+        order_status, payment_status, master_id, operator_id = order
+        if call.from_user.id not in (master_id, operator_id) and not is_admin(call.from_user.id):
             bot.answer_callback_query(
                 call.id,
-                "Only the assigned Swapper or an admin can open Dispute",
+                "Only the Operator, assigned Swapper, or an admin can open Dispute",
                 show_alert=True,
             )
             return
@@ -2561,11 +2561,19 @@ def start_dispute(call):
             bot.answer_callback_query(call.id, "Dispute is already open")
             return
 
-        msg = bot.send_message(
-            call.from_user.id,
-            f"📝 Why did Date Request #{order_id} go to Dispute?\n"
-            "Enter a required comment:",
-        )
+        try:
+            msg = bot.send_message(
+                call.from_user.id,
+                f"📝 Why did Date Request #{order_id} go to Dispute?\n"
+                "Enter a required reason in this private chat:",
+            )
+        except Exception:
+            bot.answer_callback_query(
+                call.id,
+                "Open the bot in private chat, press Start, then try again",
+                show_alert=True,
+            )
+            return
         bot.register_next_step_handler(
             msg,
             receive_dispute_comment,
@@ -2606,7 +2614,10 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT master_telegram_id, payment_status, order_status FROM orders WHERE id = %s",
+            """
+            SELECT master_telegram_id, client_telegram_id, payment_status, order_status
+            FROM orders WHERE id = %s
+            """,
             (order_id,),
         )
         order = cur.fetchone()
@@ -2616,8 +2627,8 @@ def receive_dispute_comment(message, order_id, source_chat_id, source_message_id
     if not order:
         bot.send_message(message.chat.id, "Request not found")
         return
-    master_id, payment_status, order_status = order
-    if message.from_user.id != master_id and not is_admin(message.from_user.id):
+    master_id, operator_id, payment_status, order_status = order
+    if message.from_user.id not in (master_id, operator_id) and not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
     if payment_status in ("GIFT", "PAID", "DISPUTE") or order_status == "DISPUTE":
@@ -2705,7 +2716,7 @@ def finalize_dispute(call):
             normalized_phone,
             contact_text,
         ) = order
-        if call.from_user.id != master_id and not is_admin(call.from_user.id):
+        if call.from_user.id not in (master_id, client_id) and not is_admin(call.from_user.id):
             conn.rollback()
             bot.answer_callback_query(call.id, "Access denied", show_alert=True)
             return
@@ -2836,7 +2847,7 @@ def finalize_dispute(call):
     notify_admin(
         f"⚠️ Date request #{order_id}: dispute opened\n"
         f"By: {actor_name(call.from_user)}\n"
-        f"Request creator TG ID: {client_id}\n"
+        f"Operator TG ID: {client_id}\n"
         f"Reason: {comment}\n"
         f"Contact blacklisted: {blacklist_text}"
     )
