@@ -1156,7 +1156,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
             f"\nDispute reason: {dispute_comment}"
             f"\nContact blacklisted: {blacklist_text}"
         )
-    returning_details = "\n🔁 Returning Operator: YES" if is_returning_client else ""
+    returning_details = "\n🔁 Returning Client: YES" if is_returning_client else ""
     blacklist_details = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
     final_amount_text = f"{format_money(paid_amount)} USDT" if paid_amount is not None else "—"
     difference_text = (
@@ -1972,7 +1972,7 @@ def save_order(message):
             f"Date request #{order_id} created and sent.",
         )
 
-        returning_label = "\n🔁 Returning Operator: YES" if is_returning_client else ""
+        returning_label = "\n🔁 Returning Client: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         notify_admin(f"""🆕 New Date Request #{order_id}
 
@@ -2012,7 +2012,7 @@ def send_order_to_masters(order_id, data):
     )
     masters = cur.fetchall()
 
-    returning_label = "\n🔁 Returning Operator" if data.get("is_returning_client") else ""
+    returning_label = "\n🔁 Returning Client" if data.get("is_returning_client") else ""
     blacklist_label = "\n🚫 Blacklisted contact" if data.get("is_blacklisted_contact") else ""
     text = f"""🆕 New Date Request #{order_id}
 

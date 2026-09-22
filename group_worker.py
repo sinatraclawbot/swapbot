@@ -297,14 +297,14 @@ async def create_group_async(order_id):
         client_label = f"@{client_username}" if client_username else str(client_telegram_id)
         master_label = str(master_telegram_id) if master_telegram_id else "—"
 
-        returning_label = "\n🔁 Returning Operator: YES" if is_returning_client else ""
+        returning_label = "\n🔁 Returning Client: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
 Date type: {service_type}
 Price: {price} USDT
 Operator: {client_label}
-Contact: {contact_text}
+Client: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}
 Profile: {profile_name}
