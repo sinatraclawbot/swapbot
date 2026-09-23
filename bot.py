@@ -284,6 +284,19 @@ def ensure_balance_schema():
             )
         cur.execute(
             """
+            UPDATE orders current_order
+            SET is_returning_client = EXISTS (
+                SELECT 1
+                FROM orders previous_order
+                WHERE previous_order.id < current_order.id
+                  AND previous_order.normalized_contact_phone = current_order.normalized_contact_phone
+                  AND UPPER(COALESCE(previous_order.payment_status, '')) IN ('GIFT', 'PAID')
+            )
+            WHERE current_order.normalized_contact_phone IS NOT NULL
+            """
+        )
+        cur.execute(
+            """
             INSERT INTO app_settings (setting_key, setting_value)
             VALUES ('statistics_started_at_gift_v1', NOW()::TEXT)
             ON CONFLICT (setting_key) DO NOTHING
@@ -1880,8 +1893,14 @@ def save_order(message):
         is_blacklisted_contact = False
         if client_fingerprint:
             cur.execute(
-                "SELECT 1 FROM known_clients WHERE client_fingerprint = %s",
-                (client_fingerprint,),
+                """
+                SELECT 1
+                FROM orders
+                WHERE normalized_contact_phone = %s
+                  AND UPPER(COALESCE(payment_status, '')) IN ('GIFT', 'PAID')
+                LIMIT 1
+                """,
+                (normalized_phone,),
             )
             is_returning_client = cur.fetchone() is not None
             cur.execute(
