@@ -769,6 +769,31 @@ def format_keyboard():
     return kb
 
 
+PERSONA_OPTIONS = {
+    "diana_gfe": "Diana GFE",
+    "elina_fetish": "Elina Fetish",
+    "masha_tantra": "Masha Tantra",
+    "natali_gfe": "Natali GFE",
+    "google_nuru_b2b": "Google Nuru Body2Body",
+    "shibari_fetish": "Shibari Fetish",
+    "amanda_sugar": "Amanda Sugar",
+    "maya_b2b": "Maya Body2Body",
+    "other": "Other",
+    "personal": "Personal",
+}
+
+
+def persona_keyboard():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        *[
+            InlineKeyboardButton(label, callback_data=f"persona_{key}")
+            for key, label in PERSONA_OPTIONS.items()
+        ]
+    )
+    return kb
+
+
 def period_keyboard(prefix):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1180,8 +1205,8 @@ def lead_card(order_id, viewer_id, admin_access=False):
 
     return f"""📋 Lead #{lead_id}
 
-Operator: {client_name}
-Telegram: {username_text}
+Persona: {client_name}
+Operator: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
 Payment: {payment_status or '—'}
@@ -1875,14 +1900,29 @@ def get_time_from(message):
 
 def get_time_to(message):
     user_data[message.chat.id]["time_to"] = message.text
-    msg = bot.send_message(message.chat.id, "Enter profile:")
-    bot.register_next_step_handler(msg, save_order)
+    bot.send_message(
+        message.chat.id,
+        "Select Persona:",
+        reply_markup=persona_keyboard(),
+    )
 
 
-def save_order(message):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("persona_"))
+def select_persona(call):
+    persona_key = call.data[len("persona_"):]
+    persona = PERSONA_OPTIONS.get(persona_key)
+    if persona is None or call.from_user.id not in user_data:
+        bot.answer_callback_query(call.id, "Persona selection expired. Create Date again.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id, f"Persona: {persona}")
+    save_order(call.message, persona, call.from_user)
+
+
+def save_order(message, selected_persona=None, selected_user=None):
     try:
         data = user_data[message.chat.id]
-        data["profile_name"] = message.text.strip()
+        data["profile_name"] = selected_persona or message.text.strip()
+        order_user = selected_user or message.from_user
         normalized_phone = normalize_contact_phone(data["contact_text"])
         client_fingerprint = contact_fingerprint(normalized_phone)
 
@@ -1940,7 +1980,7 @@ def save_order(message):
                 data["date_type"],
                 data["price"],
                 message.chat.id,
-                message.from_user.username,
+                order_user.username,
                 data["contact_text"],
                 data["format_type"],
                 data["time_from"],
@@ -1965,11 +2005,11 @@ def save_order(message):
                 """,
                 (client_fingerprint, order_id),
             )
-        add_status_history(cur, order_id, None, "NEW", "NO_GIFT", message.from_user)
+        add_status_history(cur, order_id, None, "NEW", "NO_GIFT", order_user)
         add_audit(
             cur,
-            message.from_user.id,
-            actor_name(message.from_user),
+            order_user.id,
+            actor_name(order_user),
             "CREATE_LEAD",
             "order",
             order_id,
@@ -1996,13 +2036,13 @@ def save_order(message):
         notify_admin(f"""🆕 New Date Request #{order_id}
 
 Operator TG ID: {message.chat.id}
-Operator username: @{message.from_user.username if message.from_user.username else 'none'}
+Operator username: @{order_user.username if order_user.username else 'none'}
 Contact: {data['contact_text']}
 Date type: {data['date_type']}
 Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
-Profile: {data['profile_name']}
+Persona: {data['profile_name']}
 {returning_label}
 {blacklist_label}
 """)
@@ -2040,7 +2080,7 @@ Date type: {data['date_type']}
 Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
-Profile: {data['profile_name']}
+Persona: {data['profile_name']}
 {returning_label}
 {blacklist_label}
 """

@@ -307,7 +307,7 @@ Operator: {client_label}
 Client: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}
-Profile: {profile_name}
+Persona: {profile_name}
 Master ID: {master_label}
 
 Order status: {order_status}
