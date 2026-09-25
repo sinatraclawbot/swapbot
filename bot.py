@@ -304,6 +304,13 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            UPDATE orders
+            SET profile_name = 'Shibari BDSM'
+            WHERE profile_name = 'Shibari Fetish'
+            """
+        )
+        cur.execute(
+            """
             INSERT INTO app_settings (setting_key, setting_value)
             VALUES ('statistics_started_at_gift_v1', NOW()::TEXT)
             ON CONFLICT (setting_key) DO NOTHING
@@ -782,7 +789,7 @@ PERSONA_OPTIONS = {
     "masha_tantra": "Masha Body2Body",
     "natali_gfe": "Natali GFE",
     "google_nuru_b2b": "Google Nuru Body2Body",
-    "shibari_fetish": "Shibari Fetish",
+    "shibari_fetish": "Shibari BDSM",
     "amanda_sugar": "Amanda Sugar",
     "maya_b2b": "Maya Body2Body",
     "other": "Other",
