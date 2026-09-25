@@ -297,6 +297,13 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            UPDATE orders
+            SET profile_name = 'Masha Body2Body'
+            WHERE profile_name = 'Masha Tantra'
+            """
+        )
+        cur.execute(
+            """
             INSERT INTO app_settings (setting_key, setting_value)
             VALUES ('statistics_started_at_gift_v1', NOW()::TEXT)
             ON CONFLICT (setting_key) DO NOTHING
@@ -772,7 +779,7 @@ def format_keyboard():
 PERSONA_OPTIONS = {
     "diana_gfe": "Diana GFE",
     "elina_fetish": "Elina Fetish",
-    "masha_tantra": "Masha Tantra",
+    "masha_tantra": "Masha Body2Body",
     "natali_gfe": "Natali GFE",
     "google_nuru_b2b": "Google Nuru Body2Body",
     "shibari_fetish": "Shibari Fetish",
