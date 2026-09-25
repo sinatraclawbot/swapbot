@@ -301,7 +301,6 @@ async def create_group_async(order_id):
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
-Date type: {service_type}
 Price: {price} USDT
 Operator: {client_label}
 Client: {contact_text}

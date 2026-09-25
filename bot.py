@@ -1856,11 +1856,9 @@ def create_order(message):
 
 def get_contact(message):
     user_data[message.chat.id]["contact_text"] = message.text
-    bot.send_message(
-        message.chat.id,
-        "Select date type:",
-        reply_markup=date_type_keyboard(),
-    )
+    user_data[message.chat.id]["date_type"] = "—"
+    msg = bot.send_message(message.chat.id, "Enter price (USDT):")
+    bot.register_next_step_handler(msg, get_price)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dt_"))
@@ -2052,7 +2050,6 @@ def save_order(message, selected_persona=None, selected_user=None):
 Operator TG ID: {message.chat.id}
 Operator username: @{order_user.username if order_user.username else 'none'}
 Contact: {data['contact_text']}
-Date type: {data['date_type']}
 Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
@@ -2090,7 +2087,6 @@ def send_order_to_masters(order_id, data):
     text = f"""🆕 New Date Request #{order_id}
 
 Contact: {data['contact_text']}
-Date type: {data['date_type']}
 Price: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
