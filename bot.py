@@ -786,6 +786,7 @@ def format_keyboard():
 PERSONA_OPTIONS = {
     "diana_gfe": "Diana GFE",
     "elina_fetish": "Elina Fetish",
+    "amina_fetish": "Amina Fetish",
     "masha_tantra": "Masha Body2Body",
     "natali_gfe": "Natali GFE",
     "google_nuru_b2b": "Google Nuru Body2Body",
