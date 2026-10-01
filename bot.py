@@ -50,6 +50,8 @@ user_data = {}
 admin_topups = {}
 pending_disputes = {}
 group_creation_queue = queue.Queue()
+group_creation_pending = set()
+group_creation_pending_lock = threading.Lock()
 group_deletion_queue = queue.Queue()
 dispute_channel_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
@@ -93,6 +95,15 @@ def load_whitelisted_fingerprints():
 
 def log(*args):
     print(*args, flush=True)
+
+
+def answer_callback_safely(callback_id, text=None, show_alert=False):
+    try:
+        bot.answer_callback_query(callback_id, text=text, show_alert=show_alert)
+        return True
+    except Exception as e:
+        log("CALLBACK ANSWER EXPIRED", repr(e))
+        return False
 
 
 class PooledConnection:
@@ -2226,7 +2237,18 @@ def group_creation_worker():
         try:
             complete_accepted_order_group(order_id, master_id, client_id)
         finally:
+            with group_creation_pending_lock:
+                group_creation_pending.discard(order_id)
             group_creation_queue.task_done()
+
+
+def queue_group_creation(order_id, master_id, client_id):
+    with group_creation_pending_lock:
+        if order_id in group_creation_pending:
+            return False
+        group_creation_pending.add(order_id)
+    group_creation_queue.put((order_id, master_id, client_id))
+    return True
 
 
 def group_deletion_worker():
@@ -2306,7 +2328,13 @@ def accept_order(call):
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT order_status, payment_status FROM orders WHERE id = %s FOR UPDATE",
+            """
+            SELECT order_status, payment_status, status, master_telegram_id,
+                   client_telegram_id, tg_group_id
+            FROM orders
+            WHERE id = %s
+            FOR UPDATE
+            """,
             (order_id,),
         )
         previous = cur.fetchone()
@@ -2314,9 +2342,16 @@ def accept_order(call):
             conn.rollback()
             cur.close()
             conn.close()
-            bot.answer_callback_query(call.id, "Request not found")
+            answer_callback_safely(call.id, "Request not found")
             return
-        old_status, old_payment_status = previous
+        (
+            old_status,
+            old_payment_status,
+            legacy_status,
+            assigned_master_id,
+            existing_client_id,
+            existing_group_id,
+        ) = previous
 
         cur.execute(
             """
@@ -2338,7 +2373,22 @@ def accept_order(call):
             conn.rollback()
             cur.close()
             conn.close()
-            bot.answer_callback_query(call.id, "This request was already taken")
+            if (
+                assigned_master_id == master_id
+                and existing_group_id is None
+                and (old_status == "ASSIGNED" or legacy_status == "ASSIGNED")
+            ):
+                queued = queue_group_creation(order_id, master_id, existing_client_id)
+                answer_callback_safely(
+                    call.id,
+                    "Accepted — creating the group…" if queued else "Group creation is already running",
+                )
+                notify_admin(
+                    f"🔄 Recovered group creation for request #{order_id}\n"
+                    f"🔄 Swapper TG ID: {master_id}\nOperator TG ID: {existing_client_id}"
+                )
+                return
+            answer_callback_safely(call.id, "This request was already taken")
             notify_admin(f"⚠️ Accept attempt for already taken request #{order_id}")
             return
 
@@ -2352,12 +2402,12 @@ def accept_order(call):
         cur.close()
         conn.close()
 
-        bot.answer_callback_query(call.id, "Accepted — creating the group…")
+        queue_group_creation(order_id, master_id, client_id)
+        answer_callback_safely(call.id, "Accepted — creating the group…")
         try:
             bot.send_message(master_id, f"✅ Request #{order_id} accepted. Creating the group…")
         except Exception as e:
             log("ACCEPT CONFIRMATION MESSAGE ERROR", order_id, repr(e))
-        group_creation_queue.put((order_id, master_id, client_id))
         notify_admin(
             f"✅ Swapper accepted request #{order_id}\n"
             f"🔄 Swapper TG ID: {master_id}\nOperator TG ID: {client_id}"
