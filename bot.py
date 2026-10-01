@@ -1301,6 +1301,7 @@ def admin_panel_keyboard():
         InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
     kb.add(InlineKeyboardButton("📋 CRM", callback_data="adm_crm"))
+    kb.add(InlineKeyboardButton("💃 Revenue by Persona", callback_data="adm_persona_rev"))
     kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     return kb
@@ -1404,6 +1405,46 @@ Revenue: {format_money(revenue)} USDT
 🔄 Swappers debt: {format_money(debt)} USDT
 Average check: {format_money(average)} USDT"""
     bot.send_message(call.message.chat.id, text)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_persona_rev")
+def show_admin_persona_revenue(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cycle_start = wallet_cycle_start_sql()
+        cur.execute(
+            f"""
+            SELECT
+                COALESCE(NULLIF(TRIM(profile_name), ''), 'Unknown') AS persona,
+                COUNT(*) AS gift_leads,
+                COALESCE(SUM(paid_amount), 0) AS revenue,
+                COALESCE(AVG(paid_amount), 0) AS average_check
+            FROM orders
+            WHERE created_at >= {cycle_start}
+              AND payment_status = 'GIFT'
+            GROUP BY persona
+            ORDER BY revenue DESC, gift_leads DESC, persona
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    lines = ["💃 Revenue by Persona — current cycle from the 8th"]
+    if not rows:
+        lines.append("No Gift leads in this cycle")
+    else:
+        for index, (persona, gift_leads, revenue, average_check) in enumerate(rows, start=1):
+            lines.append(
+                f"{index}. {persona} — {format_money(revenue)} USDT, "
+                f"{gift_leads} Gift leads, avg {format_money(average_check)} USDT"
+            )
+    bot.send_message(call.message.chat.id, "\n".join(lines))
     bot.answer_callback_query(call.id)
 
 
