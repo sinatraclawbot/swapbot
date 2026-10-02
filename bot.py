@@ -809,6 +809,45 @@ PERSONA_OPTIONS = {
 }
 
 
+def canonical_persona_name(value):
+    """Merge historical/free-text persona spellings into the current list."""
+    raw_name = " ".join(str(value or "").replace("\u00a0", " ").split()).strip()
+    if not raw_name:
+        return "Unknown"
+
+    lookup = "".join(character for character in raw_name.casefold() if character.isalnum())
+    aliases = {
+        "diana": "Diana GFE",
+        "dianagfe": "Diana GFE",
+        "elina": "Elina Fetish",
+        "elinafetish": "Elina Fetish",
+        "amina": "Amina Fetish",
+        "aminafetish": "Amina Fetish",
+        "masha": "Masha Body2Body",
+        "mashatantra": "Masha Body2Body",
+        "mashabody2body": "Masha Body2Body",
+        "natali": "Natali GFE",
+        "nataligfe": "Natali GFE",
+        "googlenuru": "Google Nuru Body2Body",
+        "googlenurub2b": "Google Nuru Body2Body",
+        "googlenurubody2body": "Google Nuru Body2Body",
+        "nuru": "Google Nuru Body2Body",
+        "nurub2b": "Google Nuru Body2Body",
+        "nurubody2body": "Google Nuru Body2Body",
+        "shibari": "Shibari BDSM",
+        "shibarifetish": "Shibari BDSM",
+        "shibaribdsm": "Shibari BDSM",
+        "amanda": "Amanda Sugar",
+        "amandasugar": "Amanda Sugar",
+        "maya": "Maya Body2Body",
+        "mayab2b": "Maya Body2Body",
+        "mayabody2body": "Maya Body2Body",
+        "other": "Other",
+        "personal": "Personal",
+    }
+    return aliases.get(lookup, raw_name)
+
+
 def persona_keyboard():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1430,21 +1469,38 @@ def show_admin_persona_revenue(call):
         cur.execute(
             f"""
             SELECT
-                COALESCE(NULLIF(TRIM(profile_name), ''), 'Unknown') AS persona,
-                COUNT(*) AS gift_leads,
-                COALESCE(SUM(paid_amount), 0) AS revenue,
-                COALESCE(AVG(paid_amount), 0) AS average_check
+                profile_name,
+                COALESCE(paid_amount, 0)
             FROM orders
             WHERE created_at >= {cycle_start}
-              AND payment_status = 'GIFT'
-            GROUP BY persona
-            ORDER BY revenue DESC, gift_leads DESC, persona
+              AND UPPER(COALESCE(payment_status, '')) IN ('GIFT', 'PAID')
             """
         )
-        rows = cur.fetchall()
+        order_rows = cur.fetchall()
     finally:
         cur.close()
         conn.close()
+
+    totals_by_persona = {}
+    for stored_persona, paid_amount in order_rows:
+        persona = canonical_persona_name(stored_persona)
+        summary = totals_by_persona.setdefault(
+            persona, {"gift_leads": 0, "revenue": Decimal("0")}
+        )
+        summary["gift_leads"] += 1
+        summary["revenue"] += Decimal(paid_amount or 0)
+    rows = sorted(
+        (
+            (
+                persona,
+                summary["gift_leads"],
+                summary["revenue"],
+                summary["revenue"] / summary["gift_leads"],
+            )
+            for persona, summary in totals_by_persona.items()
+        ),
+        key=lambda row: (-row[2], -row[1], row[0].casefold()),
+    )
 
     lines = ["💃 Revenue by Persona — current cycle from the 8th"]
     if not rows:
