@@ -1286,7 +1286,7 @@ Payment: {payment_status or '—'}
 Initial price: {format_money(price)} USDT
 Final amount: {final_amount_text}
 Difference: {difference_text}
-Expected to return: {return_prediction}
+Expected Date to return: {return_prediction}
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
@@ -2668,7 +2668,7 @@ def save_paid_amount(message, order_id, source_group_id):
     )
     bot.send_message(
         master_id,
-        f"🔮 Date Request #{order_id}\nDo you think this client will come again?",
+        f"🔮 Date Request #{order_id}\nDo you think this Date will come again?",
         reply_markup=return_question_keyboard,
     )
 
@@ -2741,7 +2741,7 @@ def save_gift_return_prediction(call):
 
     answer = "YES ✅" if will_return else "NO ❌"
     bot.edit_message_text(
-        f"🔮 Date Request #{order_id}\nDo you think this client will come again?\n\nAnswer: {answer}",
+        f"🔮 Date Request #{order_id}\nDo you think this Date will come again?\n\nAnswer: {answer}",
         call.message.chat.id,
         call.message.message_id,
     )
