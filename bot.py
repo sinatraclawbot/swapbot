@@ -20,7 +20,9 @@ from group_worker import (
     create_order_group,
     delete_order_group,
     ensure_dispute_channel,
+    ensure_gift_channel,
     send_dispute_to_channel,
+    send_gift_to_channel,
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -54,6 +56,7 @@ group_creation_pending = set()
 group_creation_pending_lock = threading.Lock()
 group_deletion_queue = queue.Queue()
 dispute_channel_queue = queue.Queue()
+gift_channel_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
@@ -2362,6 +2365,38 @@ def dispute_channel_worker():
             dispute_channel_queue.task_done()
 
 
+def gift_channel_worker():
+    while True:
+        order_id = gift_channel_queue.get()
+        try:
+            send_gift_to_channel(order_id)
+            log("GIFT SENT TO CHANNEL", order_id)
+        except Exception as e:
+            log("GIFT CHANNEL SEND ERROR", order_id, repr(e))
+            notify_admin(f"❌ Could not send Gift #{order_id} to the Gifts channel")
+        finally:
+            gift_channel_queue.task_done()
+
+
+def prepare_gift_channel():
+    try:
+        invite_link, _, _, created = ensure_gift_channel()
+        if created:
+            for admin_id in FULL_ADMIN_IDS:
+                try:
+                    bot.send_message(
+                        admin_id,
+                        "🎁 SwapDate Gifts channel created. "
+                        f"Open and join it here:\n{invite_link}",
+                    )
+                except Exception as e:
+                    log("GIFT CHANNEL INVITE ERROR", admin_id, repr(e))
+        log("GIFT CHANNEL READY", invite_link)
+    except Exception as e:
+        log("GIFT CHANNEL SETUP ERROR", repr(e))
+        notify_admin(f"❌ Could not prepare the Gifts channel: {repr(e)}")
+
+
 def prepare_dispute_channel():
     try:
         invite_link, _, _, created = ensure_dispute_channel()
@@ -2678,6 +2713,7 @@ def save_paid_amount(message, order_id, source_group_id):
         f"🔄 Swapper fee (30%): {commission} USDT\n"
         f"💼 Swapper balance: {master_balance} USDT"
     )
+    gift_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or source_group_id)
 
 
@@ -3388,6 +3424,8 @@ threading.Thread(target=group_creation_worker, daemon=True).start()
 threading.Thread(target=group_deletion_worker, daemon=True).start()
 threading.Thread(target=dispute_channel_worker, daemon=True).start()
 threading.Thread(target=prepare_dispute_channel, daemon=True).start()
+threading.Thread(target=gift_channel_worker, daemon=True).start()
+threading.Thread(target=prepare_gift_channel, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))

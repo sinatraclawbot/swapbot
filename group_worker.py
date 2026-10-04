@@ -1,5 +1,6 @@
 import os
 import asyncio
+import threading
 import psycopg2
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -32,6 +33,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
 TG_API_ID = int(TG_API_ID_RAW)
+gift_channel_lock = threading.Lock()
 
 
 def get_conn():
@@ -64,6 +66,192 @@ def dispute_message(row):
 🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
 👆 Dispute pushed by: {dispute_actor_name or '—'} (TG ID: {dispute_actor_id or '—'})
 🕒 Opened: {opened_text}"""
+
+
+def gift_message(row):
+    (
+        order_id,
+        persona,
+        client_username,
+        client_telegram_id,
+        contact_text,
+        master_telegram_id,
+        initial_price,
+        paid_amount,
+        commission_amount,
+        created_at,
+        gift_recorded_at,
+        gift_actor_id,
+        gift_actor_name,
+    ) = row
+    operator = f"@{client_username}" if client_username else str(client_telegram_id or "—")
+    recorded = gift_recorded_at or created_at
+    recorded_text = recorded.strftime("%Y-%m-%d %H:%M") if recorded else "—"
+    return f"""🎁 Gift — Date Request #{order_id}
+
+💃 Persona: {persona or '—'}
+🔄 Swapper: {master_telegram_id or '—'}
+👤 Operator: {operator}
+📞 Contact: {contact_text or '—'}
+🏷 Initial price: {initial_price or 0} USDT
+🎁 Final Gift: {paid_amount or 0} USDT
+💼 Swapper fee: {commission_amount or 0} USDT
+👆 Gift confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
+🕒 Confirmed: {recorded_text}"""
+
+
+async def ensure_gift_channel_async():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM app_settings
+            WHERE setting_key IN (
+                'gift_channel_id_v1',
+                'gift_channel_access_hash_v1',
+                'gift_channel_invite_link_v1'
+            )
+            """
+        )
+        settings = dict(cur.fetchall())
+        channel_id = settings.get("gift_channel_id_v1")
+        access_hash = settings.get("gift_channel_access_hash_v1")
+        invite_link = settings.get("gift_channel_invite_link_v1")
+
+        async with TelegramClient(
+            StringSession(TG_SESSION_STRING),
+            TG_API_ID,
+            TG_API_HASH,
+        ) as client:
+            if channel_id and access_hash and invite_link:
+                return invite_link, int(channel_id), int(access_hash), False
+
+            result = await client(
+                CreateChannelRequest(
+                    title="🎁 SwapDate Gifts",
+                    about="Private archive of all confirmed SwapDate Gifts",
+                    broadcast=True,
+                    megagroup=False,
+                )
+            )
+            channel = result.chats[0]
+            invite = await client(ExportChatInviteRequest(channel))
+            invite_link = invite.link
+
+            cur.executemany(
+                """
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES (%s, %s)
+                ON CONFLICT (setting_key) DO UPDATE
+                SET setting_value = EXCLUDED.setting_value
+                """,
+                (
+                    ("gift_channel_id_v1", str(channel.id)),
+                    ("gift_channel_access_hash_v1", str(channel.access_hash)),
+                    ("gift_channel_invite_link_v1", invite_link),
+                ),
+            )
+            conn.commit()
+
+            cur.execute(
+                """
+                SELECT o.id, o.profile_name, o.client_username, o.client_telegram_id,
+                       o.contact_text, o.master_telegram_id, o.price, o.paid_amount,
+                       o.commission_amount, o.created_at,
+                       gift_history.created_at, gift_history.actor_telegram_id,
+                       gift_history.actor_name
+                FROM orders o
+                LEFT JOIN LATERAL (
+                    SELECT created_at, actor_telegram_id, actor_name
+                    FROM order_status_history
+                    WHERE order_id = o.id AND payment_status IN ('GIFT', 'PAID')
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                ) gift_history ON TRUE
+                WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+                ORDER BY COALESCE(gift_history.created_at, o.created_at), o.id
+                """
+            )
+            for row in cur.fetchall():
+                await client(
+                    SendMessageRequest(peer=channel, message=gift_message(row))
+                )
+
+            return invite_link, channel.id, channel.access_hash, True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_gift_channel():
+    with gift_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(ensure_gift_channel_async())
+        finally:
+            loop.close()
+
+
+async def send_gift_to_channel_async(order_id):
+    _, channel_id, access_hash, created = await ensure_gift_channel_async()
+    if created:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT o.id, o.profile_name, o.client_username, o.client_telegram_id,
+                   o.contact_text, o.master_telegram_id, o.price, o.paid_amount,
+                   o.commission_amount, o.created_at,
+                   gift_history.created_at, gift_history.actor_telegram_id,
+                   gift_history.actor_name
+            FROM orders o
+            LEFT JOIN LATERAL (
+                SELECT created_at, actor_telegram_id, actor_name
+                FROM order_status_history
+                WHERE order_id = o.id AND payment_status IN ('GIFT', 'PAID')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) gift_history ON TRUE
+            WHERE o.id = %s
+            """,
+            (order_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Order #{order_id} not found")
+    finally:
+        cur.close()
+        conn.close()
+
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING),
+        TG_API_ID,
+        TG_API_HASH,
+    ) as client:
+        await client(
+            SendMessageRequest(
+                peer=InputChannel(channel_id, access_hash),
+                message=gift_message(row),
+            )
+        )
+
+
+def send_gift_to_channel(order_id):
+    with gift_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(send_gift_to_channel_async(order_id))
+        finally:
+            loop.close()
 
 
 async def ensure_dispute_channel_async():
