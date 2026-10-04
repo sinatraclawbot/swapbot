@@ -1,6 +1,7 @@
 import os
 import asyncio
 import threading
+from datetime import datetime, timedelta, timezone
 import psycopg2
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -33,7 +34,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
 TG_API_ID = int(TG_API_ID_RAW)
-gift_channel_lock = threading.Lock()
+archive_channel_lock = threading.Lock()
 
 
 def get_conn():
@@ -171,6 +172,8 @@ async def ensure_gift_channel_async():
                     LIMIT 1
                 ) gift_history ON TRUE
                 WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+                  AND COALESCE(gift_history.created_at, o.created_at)
+                      >= NOW() - INTERVAL '7 days'
                 ORDER BY COALESCE(gift_history.created_at, o.created_at), o.id
                 """
             )
@@ -189,7 +192,7 @@ async def ensure_gift_channel_async():
 
 
 def ensure_gift_channel():
-    with gift_channel_lock:
+    with archive_channel_lock:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -245,7 +248,7 @@ async def send_gift_to_channel_async(order_id):
 
 
 def send_gift_to_channel(order_id):
-    with gift_channel_lock:
+    with archive_channel_lock:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -325,7 +328,9 @@ async def ensure_dispute_channel_async():
                     ORDER BY created_at DESC, id DESC
                     LIMIT 1
                 ) dispute_history ON TRUE
-                WHERE o.payment_status = 'DISPUTE' OR o.order_status = 'DISPUTE'
+                WHERE (o.payment_status = 'DISPUTE' OR o.order_status = 'DISPUTE')
+                  AND COALESCE(o.dispute_opened_at, o.created_at)
+                      >= NOW() - INTERVAL '7 days'
                 ORDER BY COALESCE(o.dispute_opened_at, o.created_at), o.id
                 """
             )
@@ -347,12 +352,13 @@ async def ensure_dispute_channel_async():
 
 
 def ensure_dispute_channel():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(ensure_dispute_channel_async())
-    finally:
-        loop.close()
+    with archive_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(ensure_dispute_channel_async())
+        finally:
+            loop.close()
 
 
 async def send_dispute_to_channel_async(order_id):
@@ -400,12 +406,73 @@ async def send_dispute_to_channel_async(order_id):
 
 
 def send_dispute_to_channel(order_id):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    with archive_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(send_dispute_to_channel_async(order_id))
+        finally:
+            loop.close()
+
+
+async def cleanup_archive_channels_async():
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        loop.run_until_complete(send_dispute_to_channel_async(order_id))
+        cur.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM app_settings
+            WHERE setting_key IN (
+                'gift_channel_id_v1',
+                'gift_channel_access_hash_v1',
+                'dispute_channel_id_v1',
+                'dispute_channel_access_hash_v1'
+            )
+            """
+        )
+        settings = dict(cur.fetchall())
     finally:
-        loop.close()
+        cur.close()
+        conn.close()
+
+    channels = []
+    for prefix in ("gift", "dispute"):
+        channel_id = settings.get(f"{prefix}_channel_id_v1")
+        access_hash = settings.get(f"{prefix}_channel_access_hash_v1")
+        if channel_id and access_hash:
+            channels.append((prefix, InputChannel(int(channel_id), int(access_hash))))
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    deleted_counts = {}
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING),
+        TG_API_ID,
+        TG_API_HASH,
+    ) as client:
+        for prefix, channel in channels:
+            old_message_ids = []
+            async for message in client.iter_messages(channel):
+                if message.date and message.date < cutoff:
+                    old_message_ids.append(message.id)
+                    if len(old_message_ids) >= 100:
+                        await client.delete_messages(channel, old_message_ids)
+                        deleted_counts[prefix] = deleted_counts.get(prefix, 0) + len(old_message_ids)
+                        old_message_ids = []
+            if old_message_ids:
+                await client.delete_messages(channel, old_message_ids)
+                deleted_counts[prefix] = deleted_counts.get(prefix, 0) + len(old_message_ids)
+    return deleted_counts
+
+
+def cleanup_archive_channels():
+    with archive_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(cleanup_archive_channels_async())
+        finally:
+            loop.close()
 
 
 async def create_group_async(order_id):

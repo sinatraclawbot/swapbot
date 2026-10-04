@@ -17,6 +17,7 @@ from telebot.types import (
     InlineKeyboardButton,
 )
 from group_worker import (
+    cleanup_archive_channels,
     create_order_group,
     delete_order_group,
     ensure_dispute_channel,
@@ -64,6 +65,7 @@ LOW_BALANCE_REMINDER_INTERVAL_HOURS = 2
 LOW_BALANCE_CHECK_INTERVAL_SECONDS = 300
 LEAD_FOLLOWUP_DELAY_HOURS = 8
 LEAD_FOLLOWUP_CHECK_INTERVAL_SECONDS = 300
+ARCHIVE_CHANNEL_CLEANUP_INTERVAL_SECONDS = 21600
 DB_POOL_MIN_CONNECTIONS = 1
 DB_POOL_MAX_CONNECTIONS = 12
 _db_pool = None
@@ -2416,6 +2418,18 @@ def prepare_dispute_channel():
         notify_admin(f"❌ Could not prepare the Disputes channel: {repr(e)}")
 
 
+def archive_channel_cleanup_worker():
+    time.sleep(20)
+    while True:
+        try:
+            deleted_counts = cleanup_archive_channels()
+            log("ARCHIVE CHANNELS CLEANED", deleted_counts)
+        except Exception as e:
+            log("ARCHIVE CHANNEL CLEANUP ERROR", repr(e))
+            notify_admin(f"❌ Could not clean old Gifts/Disputes channel messages: {repr(e)}")
+        time.sleep(ARCHIVE_CHANNEL_CLEANUP_INTERVAL_SECONDS)
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_"))
 def accept_order(call):
     try:
@@ -3426,6 +3440,7 @@ threading.Thread(target=dispute_channel_worker, daemon=True).start()
 threading.Thread(target=prepare_dispute_channel, daemon=True).start()
 threading.Thread(target=gift_channel_worker, daemon=True).start()
 threading.Thread(target=prepare_gift_channel, daemon=True).start()
+threading.Thread(target=archive_channel_cleanup_worker, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
