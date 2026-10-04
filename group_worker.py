@@ -49,6 +49,8 @@ def dispute_message(row):
         dispute_blacklisted,
         created_at,
         dispute_opened_at,
+        dispute_actor_id,
+        dispute_actor_name,
     ) = row
     client = f"@{client_username}" if client_username else str(client_telegram_id or "—")
     opened = dispute_opened_at or created_at
@@ -60,6 +62,7 @@ def dispute_message(row):
 📞 Contact: {contact_text or '—'}
 📝 Reason: {dispute_comment or '—'}
 🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
+👆 Dispute pushed by: {dispute_actor_name or '—'} (TG ID: {dispute_actor_id or '—'})
 🕒 Opened: {opened_text}"""
 
 
@@ -123,10 +126,19 @@ async def ensure_dispute_channel_async():
                 """
                 SELECT id, client_username, client_telegram_id, contact_text,
                        master_telegram_id, dispute_comment, dispute_blacklisted,
-                       created_at, dispute_opened_at
-                FROM orders
-                WHERE payment_status = 'DISPUTE' OR order_status = 'DISPUTE'
-                ORDER BY COALESCE(dispute_opened_at, created_at), id
+                       created_at, dispute_opened_at,
+                       dispute_history.actor_telegram_id,
+                       dispute_history.actor_name
+                FROM orders o
+                LEFT JOIN LATERAL (
+                    SELECT actor_telegram_id, actor_name
+                    FROM order_status_history
+                    WHERE order_id = o.id AND new_status = 'DISPUTE'
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                ) dispute_history ON TRUE
+                WHERE o.payment_status = 'DISPUTE' OR o.order_status = 'DISPUTE'
+                ORDER BY COALESCE(o.dispute_opened_at, o.created_at), o.id
                 """
             )
             for row in cur.fetchall():
@@ -164,9 +176,18 @@ async def send_dispute_to_channel_async(order_id):
             """
             SELECT id, client_username, client_telegram_id, contact_text,
                    master_telegram_id, dispute_comment, dispute_blacklisted,
-                   created_at, dispute_opened_at
-            FROM orders
-            WHERE id = %s
+                   created_at, dispute_opened_at,
+                   dispute_history.actor_telegram_id,
+                   dispute_history.actor_name
+            FROM orders o
+            LEFT JOIN LATERAL (
+                SELECT actor_telegram_id, actor_name
+                FROM order_status_history
+                WHERE order_id = o.id AND new_status = 'DISPUTE'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) dispute_history ON TRUE
+            WHERE o.id = %s
             """,
             (order_id,),
         )

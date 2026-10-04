@@ -3052,9 +3052,13 @@ def finalize_dispute(call):
     if group_chat_id and not str(group_chat_id).startswith("-100"):
         group_chat_id = int(f"-100{group_chat_id}")
     blacklist_text = "YES 🚫" if add_to_blacklist else "NO"
+    dispute_actor = actor_name(call.from_user)
+    dispute_actor_text = f"{dispute_actor} (TG ID: {call.from_user.id})"
     dispute_text = (
         build_group_status_text(order_id, "DISPUTE", "DISPUTE")
-        + f"\n📝 Dispute reason:\n{comment}\n\n🚫 Contact blacklisted: {blacklist_text}"
+        + f"\n📝 Dispute reason:\n{comment}"
+        + f"\n\n👆 Dispute pushed by: {dispute_actor_text}"
+        + f"\n🚫 Contact blacklisted: {blacklist_text}"
     )
 
     bot.edit_message_text(
@@ -3063,6 +3067,7 @@ def finalize_dispute(call):
 📝 Reason:
 {comment}
 
+👆 Dispute pushed by: {dispute_actor_text}
 🚫 Contact blacklisted: {blacklist_text}""",
         call.message.chat.id,
         call.message.message_id,
@@ -3084,7 +3089,7 @@ def finalize_dispute(call):
 
     notify_admin(
         f"⚠️ Date request #{order_id}: dispute opened\n"
-        f"By: {actor_name(call.from_user)}\n"
+        f"By: {dispute_actor_text}\n"
         f"Operator TG ID: {client_id}\n"
         f"Reason: {comment}\n"
         f"Contact blacklisted: {blacklist_text}"
