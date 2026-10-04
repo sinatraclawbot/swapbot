@@ -167,6 +167,7 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS dispute_comment TEXT,
             ADD COLUMN IF NOT EXISTS dispute_blacklisted BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS dispute_opened_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS gift_client_will_return BOOLEAN,
             ADD COLUMN IF NOT EXISTS normalized_contact_phone TEXT,
             ADD COLUMN IF NOT EXISTS is_returning_client BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS is_blacklisted_contact BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1212,7 +1213,8 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.dispute_comment,
                 o.dispute_blacklisted,
                 o.is_returning_client,
-                o.is_blacklisted_contact
+                o.is_blacklisted_contact,
+                o.gift_client_will_return
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
@@ -1241,6 +1243,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
         lead_id, client_name, username, created_at, status, price, meeting_at,
         time_from, time_to, source, paid_amount, payment_status, master_id,
         dispute_comment, dispute_blacklisted, is_returning_client, is_blacklisted_contact,
+        gift_client_will_return,
     ) = row
     meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
     username_text = f"@{username}" if username else "—"
@@ -1261,6 +1264,11 @@ def lead_card(order_id, viewer_id, admin_access=False):
         )
     returning_details = "\n🔁 Returning Client: YES" if is_returning_client else ""
     blacklist_details = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
+    return_prediction = {
+        True: "YES ✅",
+        False: "NO ❌",
+        None: "Not answered",
+    }[gift_client_will_return]
     final_amount_text = f"{format_money(paid_amount)} USDT" if paid_amount is not None else "—"
     difference_text = (
         f"{format_money(Decimal(paid_amount) - Decimal(price or 0))} USDT"
@@ -1278,6 +1286,7 @@ Payment: {payment_status or '—'}
 Initial price: {format_money(price)} USDT
 Final amount: {final_amount_text}
 Difference: {difference_text}
+Expected to return: {return_prediction}
 Meeting: {meeting}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
@@ -2652,6 +2661,16 @@ def save_paid_amount(message, order_id, source_group_id):
         master_id,
         f"Payment saved. Fee charged: {commission} USDT. Balance: {master_balance} USDT",
     )
+    return_question_keyboard = InlineKeyboardMarkup(row_width=2)
+    return_question_keyboard.add(
+        InlineKeyboardButton("✅ Yes", callback_data=f"again_yes_{order_id}"),
+        InlineKeyboardButton("❌ No", callback_data=f"again_no_{order_id}"),
+    )
+    bot.send_message(
+        master_id,
+        f"🔮 Date Request #{order_id}\nDo you think this client will come again?",
+        reply_markup=return_question_keyboard,
+    )
 
     notify_admin(
         f"🎁 Date request #{order_id}: marked as GIFT\n"
@@ -2660,6 +2679,73 @@ def save_paid_amount(message, order_id, source_group_id):
         f"💼 Swapper balance: {master_balance} USDT"
     )
     queue_group_deletion(order_id, group_chat_id or source_group_id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: (
+        call.data.startswith("again_yes_") or call.data.startswith("again_no_")
+    ) and call.data.rsplit("_", 1)[-1].isdigit()
+)
+def save_gift_return_prediction(call):
+    order_id = int(call.data.rsplit("_", 1)[-1])
+    will_return = call.data.startswith("again_yes_")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT master_telegram_id, payment_status, gift_client_will_return
+            FROM orders
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+        order = cur.fetchone()
+        if not order:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Request not found", show_alert=True)
+            return
+        master_id, payment_status, old_prediction = order
+        if call.from_user.id != master_id and not is_admin(call.from_user.id):
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Only the assigned Swapper can answer", show_alert=True)
+            return
+        if payment_status not in ("GIFT", "PAID"):
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Gift has not been recorded", show_alert=True)
+            return
+        cur.execute(
+            "UPDATE orders SET gift_client_will_return = %s WHERE id = %s",
+            (will_return, order_id),
+        )
+        add_audit(
+            cur,
+            call.from_user.id,
+            actor_name(call.from_user),
+            "SET_CLIENT_RETURN_PREDICTION",
+            "order",
+            order_id,
+            old_prediction,
+            will_return,
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log("GIFT RETURN PREDICTION ERROR", repr(e))
+        bot.answer_callback_query(call.id, "Could not save the answer", show_alert=True)
+        return
+    finally:
+        cur.close()
+        conn.close()
+
+    answer = "YES ✅" if will_return else "NO ❌"
+    bot.edit_message_text(
+        f"🔮 Date Request #{order_id}\nDo you think this client will come again?\n\nAnswer: {answer}",
+        call.message.chat.id,
+        call.message.message_id,
+    )
+    bot.answer_callback_query(call.id, "Answer saved")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("done_"))
