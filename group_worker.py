@@ -1,5 +1,6 @@
 import os
 import asyncio
+import io
 import threading
 from datetime import datetime, timedelta, timezone
 import psycopg2
@@ -530,6 +531,18 @@ async def create_group_async(order_id):
             is_blacklisted_contact,
         ) = row
 
+        cur.execute(
+            """
+            SELECT name, hair_color, age,
+                   photo_1, photo_1_mime, photo_2, photo_2_mime
+            FROM personas
+            WHERE is_active = TRUE AND LOWER(name) = LOWER(%s)
+            LIMIT 1
+            """,
+            (profile_name,),
+        )
+        persona_profile = cur.fetchone()
+
         title_prefix = ""
         if is_blacklisted_contact:
             title_prefix += "🚫 "
@@ -597,6 +610,48 @@ Payment status: {payment_status}
                 message=group_message,
             )
         )
+
+        if persona_profile:
+            (
+                persona_name,
+                hair_color,
+                persona_age,
+                photo_1,
+                photo_1_mime,
+                photo_2,
+                photo_2_mime,
+            ) = persona_profile
+            persona_caption = (
+                f"💃 Persona profile\n\n"
+                f"Name: {persona_name}\n"
+                f"Hair color: {hair_color or '—'}\n"
+                f"Age: {persona_age or '—'}"
+            )
+            media_files = []
+            for index, (photo, mime) in enumerate(
+                ((photo_1, photo_1_mime), (photo_2, photo_2_mime)),
+                start=1,
+            ):
+                if not photo:
+                    continue
+                extension = {
+                    "image/png": "png",
+                    "image/webp": "webp",
+                }.get(mime, "jpg")
+                media = io.BytesIO(bytes(photo))
+                media.name = f"persona_{index}.{extension}"
+                media_files.append(media)
+            if media_files:
+                await client.send_file(
+                    channel,
+                    media_files,
+                    caption=persona_caption,
+                    force_document=False,
+                )
+            elif hair_color or persona_age:
+                await client(
+                    SendMessageRequest(peer=channel, message=persona_caption)
+                )
 
         cur.execute(
             """

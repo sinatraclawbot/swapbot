@@ -1,17 +1,19 @@
 import os
 import hashlib
+import hmac
 import json
 import queue
 import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
 import telebot
 import psycopg2
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 from psycopg2.pool import ThreadedConnectionPool
-from flask import Flask, request
+from flask import Flask, jsonify, request
 from telebot.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -52,6 +54,7 @@ WHITELIST_PATH = os.path.join(os.path.dirname(__file__), "whitelist_hashes.txt")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 7 * 1024 * 1024
 user_data = {}
 admin_topups = {}
 pending_disputes = {}
@@ -229,6 +232,42 @@ def ensure_balance_schema():
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS personas (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                hair_color TEXT,
+                age INTEGER,
+                photo_1 BYTEA,
+                photo_1_mime TEXT,
+                photo_2 BYTEA,
+                photo_2_mime TEXT,
+                created_by_telegram_id BIGINT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT personas_age_range CHECK (age IS NULL OR age BETWEEN 18 AND 99)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_name_lower
+            ON personas ((LOWER(name)))
+            """
+        )
+        for persona_name in PERSONA_OPTIONS.values():
+            cur.execute(
+                """
+                INSERT INTO personas (name)
+                SELECT %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM personas WHERE LOWER(name) = LOWER(%s)
+                )
+                """,
+                (persona_name, persona_name),
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS client_blacklist (
@@ -724,6 +763,12 @@ def main_menu(user_id=None):
             web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/create-date"),
         )
     )
+    markup.add(
+        KeyboardButton(
+            "Create Persona",
+            web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/create-persona"),
+        )
+    )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
@@ -866,6 +911,43 @@ PERSONA_OPTIONS = {
     "other": "Other",
     "personal": "Personal",
 }
+
+
+def load_active_persona_names():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT name FROM personas WHERE is_active = TRUE ORDER BY LOWER(name), id"
+        )
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+
+def verify_telegram_webapp_user(init_data, max_age_seconds=3600):
+    values = dict(parse_qsl(init_data or "", keep_blank_values=True))
+    received_hash = values.pop("hash", "")
+    if not received_hash:
+        raise ValueError("Telegram authorization is missing")
+    data_check_string = "\n".join(f"{key}={values[key]}" for key in sorted(values))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+    expected_hash = hmac.new(
+        secret_key,
+        data_check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_hash, received_hash):
+        raise ValueError("Telegram authorization is invalid")
+    auth_date = int(values.get("auth_date", "0"))
+    if auth_date <= 0 or abs(int(time.time()) - auth_date) > max_age_seconds:
+        raise ValueError("Telegram authorization expired")
+    user = json.loads(values.get("user", "{}"))
+    user_id = int(user.get("id", 0))
+    if user_id <= 0:
+        raise ValueError("Telegram user is missing")
+    return user_id, user
 
 
 def canonical_persona_name(value):
@@ -2028,6 +2110,11 @@ def create_order(message):
     send_main_menu(message.chat.id, "Tap Create Date to open the Mini App.")
 
 
+@bot.message_handler(func=lambda message: message.text == "Create Persona")
+def open_create_persona(message):
+    send_main_menu(message.chat.id, "Tap Create Persona to open the Mini App.")
+
+
 def get_contact(message):
     user_data[message.chat.id]["contact_text"] = message.text
     user_data[message.chat.id]["date_type"] = "—"
@@ -2127,7 +2214,7 @@ def receive_time_picker(message):
             bot.send_message(message.chat.id, "❌ Select Incall or Outcall.")
             return
         persona = payload.get("persona")
-        if persona not in PERSONA_OPTIONS.values():
+        if persona not in load_active_persona_names():
             bot.send_message(message.chat.id, "❌ Select a Persona from the list.")
             return
         user_data[message.from_user.id] = {
@@ -3409,6 +3496,186 @@ def finalize_dispute(call):
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
 
 
+@app.route("/create-persona", methods=["GET"])
+def create_persona_page():
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Create Persona</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:12px 12px calc(16px + env(safe-area-inset-bottom)); min-height:100dvh;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--tg-theme-text-color,#111);
+      background:var(--tg-theme-bg-color,#fff); overflow-x:hidden; }
+    h1 { margin:0 0 4px; font-size:22px; }
+    .sub { margin:0 0 10px; color:var(--tg-theme-hint-color,#777); font-size:14px; }
+    .card { padding:12px; border-radius:16px; background:var(--tg-theme-secondary-bg-color,#f3f3f3); }
+    label { display:block; margin:10px 0 5px; font-size:14px; font-weight:700; }
+    label:first-child { margin-top:0; }
+    input, select { display:block; width:100%; min-width:0; min-height:44px; padding:8px 10px; border-radius:12px;
+      border:1px solid var(--tg-theme-hint-color,#999); font:inherit; font-size:16px;
+      color:var(--tg-theme-text-color,#111); background:var(--tg-theme-bg-color,#fff); }
+    .row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; }
+    .photos { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+    .photos img { display:none; width:100%; height:115px; object-fit:cover; border-radius:12px; }
+    .note { margin-top:5px; color:var(--tg-theme-hint-color,#777); font-size:11px; }
+    .error { min-height:18px; margin:7px 2px 0; color:#d63333; font-size:13px; font-weight:650; }
+    button { position:sticky; bottom:max(6px,env(safe-area-inset-bottom)); width:100%; min-height:48px; margin-top:4px;
+      border:0; border-radius:14px; font:inherit; font-size:17px; font-weight:800;
+      color:var(--tg-theme-button-text-color,#fff); background:var(--tg-theme-button-color,#2481cc); }
+    button:disabled { opacity:.55; }
+  </style>
+</head>
+<body>
+  <h1>💃 Create Persona</h1>
+  <p class="sub">Add profile details and 1–2 photos</p>
+  <div class="card">
+    <label for="name">Name</label>
+    <input id="name" maxlength="50" placeholder="Persona name" autocomplete="off">
+    <div class="row">
+      <div><label for="hair">Hair color</label>
+        <select id="hair"><option value="">Select</option><option>Blonde</option><option>Brunette</option>
+          <option>Black</option><option>Brown</option><option>Red</option><option>Other</option></select></div>
+      <div><label for="age">Age</label><select id="age"><option value="">Select</option></select></div>
+    </div>
+    <label for="photos">Content photos</label>
+    <input id="photos" type="file" accept="image/*" multiple>
+    <div class="note">Choose one or two photos. They will be compressed before upload.</div>
+    <div class="photos"><img id="preview1"><img id="preview2"></div>
+  </div>
+  <div id="error" class="error"></div>
+  <button id="create" type="button">✨ Create Persona</button>
+  <script>
+    const tg=window.Telegram.WebApp; tg.ready(); tg.expand();
+    const nameInput=document.getElementById('name'), hairInput=document.getElementById('hair');
+    const ageInput=document.getElementById('age'), photosInput=document.getElementById('photos');
+    const error=document.getElementById('error'), createButton=document.getElementById('create');
+    for(let age=18;age<=70;age++) ageInput.add(new Option(String(age),String(age)));
+    photosInput.addEventListener('change',()=>{
+      const files=[...photosInput.files].slice(0,2);
+      [document.getElementById('preview1'),document.getElementById('preview2')].forEach((img,index)=>{
+        if(files[index]){img.src=URL.createObjectURL(files[index]);img.style.display='block';}
+        else{img.removeAttribute('src');img.style.display='none';}
+      });
+      if(photosInput.files.length>2) error.textContent='Maximum two photos.';
+    });
+    async function compressPhoto(file){
+      const image=await createImageBitmap(file);
+      const scale=Math.min(1,1280/Math.max(image.width,image.height));
+      const canvas=document.createElement('canvas'); canvas.width=Math.round(image.width*scale); canvas.height=Math.round(image.height*scale);
+      canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height); image.close();
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.82));
+      if(!blob) throw new Error('Could not process a photo');
+      return blob;
+    }
+    createButton.addEventListener('click',async()=>{
+      error.textContent=''; const name=nameInput.value.trim(), hair=hairInput.value, age=ageInput.value;
+      const files=[...photosInput.files];
+      if(name.length<2){error.textContent='Enter the Persona name.';return;}
+      if(!hair){error.textContent='Select hair color.';return;}
+      if(!age){error.textContent='Select age.';return;}
+      if(files.length<1||files.length>2){error.textContent='Choose one or two photos.';return;}
+      createButton.disabled=true; createButton.textContent='Uploading…';
+      try{
+        const form=new FormData(); form.append('init_data',tg.initData); form.append('name',name);
+        form.append('hair_color',hair); form.append('age',age);
+        for(const file of files) form.append('photos',await compressPhoto(file),'persona.jpg');
+        const response=await fetch('/api/personas',{method:'POST',body:form});
+        const result=await response.json();
+        if(!response.ok) throw new Error(result.error||'Could not create Persona');
+        createButton.textContent='✅ Persona created'; setTimeout(()=>tg.close(),700);
+      }catch(e){error.textContent=e.message;createButton.disabled=false;createButton.textContent='✨ Create Persona';}
+    });
+  </script>
+</body>
+</html>""", 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
+
+
+@app.route("/api/personas", methods=["POST"])
+def create_persona_api():
+    try:
+        user_id, telegram_user = verify_telegram_webapp_user(request.form.get("init_data"))
+        name = " ".join((request.form.get("name") or "").split()).strip()
+        hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
+        age = int(request.form.get("age", "0"))
+        if len(name) < 2 or len(name) > 50:
+            raise ValueError("Name must contain 2–50 characters")
+        if len(hair_color) < 2 or len(hair_color) > 30:
+            raise ValueError("Select a valid hair color")
+        if age < 18 or age > 99:
+            raise ValueError("Age must be between 18 and 99")
+        uploaded_files = [item for item in request.files.getlist("photos") if item.filename]
+        if len(uploaded_files) not in (1, 2):
+            raise ValueError("Choose one or two photos")
+        photos = []
+        for uploaded in uploaded_files:
+            photo = uploaded.read(3 * 1024 * 1024 + 1)
+            if not photo or len(photo) > 3 * 1024 * 1024:
+                raise ValueError("Each photo must be smaller than 3 MB")
+            if photo.startswith(b"\xff\xd8\xff"):
+                mime = "image/jpeg"
+            elif photo.startswith(b"\x89PNG\r\n\x1a\n"):
+                mime = "image/png"
+            elif photo.startswith(b"RIFF") and photo[8:12] == b"WEBP":
+                mime = "image/webp"
+            else:
+                raise ValueError("Photos must be JPEG, PNG, or WebP")
+            photos.append((photo, mime))
+        while len(photos) < 2:
+            photos.append((None, None))
+
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO personas (
+                    name, hair_color, age,
+                    photo_1, photo_1_mime, photo_2, photo_2_mime,
+                    created_by_telegram_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    name, hair_color, age,
+                    photos[0][0], photos[0][1], photos[1][0], photos[1][1],
+                    user_id,
+                ),
+            )
+            persona_id = cur.fetchone()[0]
+            add_audit(
+                cur, user_id,
+                f"@{telegram_user.get('username')}" if telegram_user.get("username") else str(user_id),
+                "CREATE_PERSONA", "persona", persona_id, None, name,
+                f"hair_color={hair_color}; age={age}; photos={len(uploaded_files)}",
+            )
+            conn.commit()
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return jsonify(error="A Persona with this name already exists"), 409
+        finally:
+            cur.close()
+            conn.close()
+
+        try:
+            bot.send_message(user_id, f"✅ Persona {name} created and added to Create Date.")
+        except Exception as e:
+            log("PERSONA CREATED CONFIRMATION ERROR", user_id, repr(e))
+        return jsonify(ok=True, persona_id=persona_id, name=name)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        log("CREATE PERSONA API ERROR", repr(e))
+        return jsonify(error="Could not create Persona"), 500
+
+
 @app.route("/create-date", methods=["GET"])
 def create_date_page():
     html = """<!doctype html>
@@ -3602,8 +3869,11 @@ def create_date_page():
 </html>"""
     return html.replace(
         "__PERSONA_OPTIONS__",
-        json.dumps(list(PERSONA_OPTIONS.values()), ensure_ascii=False),
-    ), 200, {"Content-Type": "text/html; charset=utf-8"}
+        json.dumps(load_active_persona_names(), ensure_ascii=False),
+    ), 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
 
 
 @app.route("/time-picker", methods=["GET"])
