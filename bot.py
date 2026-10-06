@@ -718,7 +718,12 @@ def parse_admin_balance_command(message, command_name):
 
 def main_menu(user_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("Create Date"))
+    markup.add(
+        KeyboardButton(
+            "Create Date",
+            web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/create-date"),
+        )
+    )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
@@ -2020,9 +2025,7 @@ def confirm_topup(call):
 
 @bot.message_handler(func=lambda message: message.text == "Create Date")
 def create_order(message):
-    user_data[message.chat.id] = {}
-    msg = bot.send_message(message.chat.id, "Enter contact:")
-    bot.register_next_step_handler(msg, get_contact)
+    send_main_menu(message.chat.id, "Tap Create Date to open the Mini App.")
 
 
 def get_contact(message):
@@ -2087,14 +2090,8 @@ def select_format(call):
 
 @bot.message_handler(content_types=["web_app_data"])
 def receive_time_picker(message):
-    data = user_data.get(message.from_user.id)
-    if data is None:
-        bot.send_message(message.chat.id, "Time selection expired. Tap Create Date again.")
-        return
     try:
         payload = json.loads(message.web_app_data.data)
-        if payload.get("type") != "date_time":
-            raise ValueError("Unexpected picker response")
         start_at = datetime.fromtimestamp(int(payload["start_ts"]), BOT_TIMEZONE)
         end_at = datetime.fromtimestamp(int(payload["end_ts"]), BOT_TIMEZONE)
         now = datetime.now(BOT_TIMEZONE)
@@ -2107,10 +2104,51 @@ def receive_time_picker(message):
         if end_at > start_at + timedelta(hours=24):
             raise ValueError("Date duration cannot exceed 24 hours")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
-        bot.send_message(message.chat.id, f"❌ Invalid time: {e}. Open the roulette again.")
+        bot.send_message(message.chat.id, f"❌ Invalid Date request: {e}. Open Create Date again.")
         return
 
     today = now.date()
+    if payload.get("type") == "create_date":
+        contact = str(payload.get("contact", "")).strip()
+        if len(contact) < 3 or len(contact) > 200:
+            bot.send_message(message.chat.id, "❌ Contact must contain 3–200 characters.")
+            return
+        try:
+            price = Decimal(str(payload.get("price", "")).replace(",", ".")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            if price <= 0:
+                raise InvalidOperation
+        except (InvalidOperation, ValueError):
+            bot.send_message(message.chat.id, "❌ Enter a positive Price.")
+            return
+        format_type = payload.get("format")
+        if format_type not in ("Incall", "Outcall"):
+            bot.send_message(message.chat.id, "❌ Select Incall or Outcall.")
+            return
+        persona = payload.get("persona")
+        if persona not in PERSONA_OPTIONS.values():
+            bot.send_message(message.chat.id, "❌ Select a Persona from the list.")
+            return
+        user_data[message.from_user.id] = {
+            "contact_text": contact,
+            "date_type": "—",
+            "price": price,
+            "format_type": format_type,
+            "meeting_at": start_at,
+            "time_from": time_choice_label(start_at, today),
+            "time_to": time_choice_label(end_at, today),
+        }
+        save_order(message, persona, message.from_user)
+        return
+
+    data = user_data.get(message.from_user.id)
+    if payload.get("type") != "date_time":
+        bot.send_message(message.chat.id, "❌ Unexpected Mini App response.")
+        return
+    if data is None:
+        bot.send_message(message.chat.id, "Time selection expired. Tap Create Date again.")
+        return
     data["meeting_at"] = start_at
     data["time_from"] = time_choice_label(start_at, today)
     data["time_to"] = time_choice_label(end_at, today)
@@ -3369,6 +3407,185 @@ def finalize_dispute(call):
     )
     dispute_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
+
+
+@app.route("/create-date", methods=["GET"])
+def create_date_page():
+    html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Create Date</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--tg-theme-text-color, #111);
+      background: var(--tg-theme-bg-color, #fff);
+    }
+    h1 { margin: 0 0 5px; font-size: 25px; }
+    .subtitle { margin: 0 0 20px; color: var(--tg-theme-hint-color, #777); }
+    .card {
+      padding: 16px; border-radius: 18px;
+      background: var(--tg-theme-secondary-bg-color, #f3f3f3);
+    }
+    label.field { display: block; margin: 15px 0 7px; font-weight: 700; }
+    label.field:first-child { margin-top: 0; }
+    input, select {
+      width: 100%; min-height: 50px; padding: 11px 12px;
+      border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #888) 55%, transparent);
+      border-radius: 13px; font: inherit; font-size: 17px;
+      color: var(--tg-theme-text-color, #111);
+      background: var(--tg-theme-bg-color, #fff);
+    }
+    .format { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .format input { position: absolute; opacity: 0; pointer-events: none; }
+    .format span {
+      display: block; padding: 13px; border-radius: 13px; text-align: center;
+      font-weight: 700; border: 1px solid var(--tg-theme-hint-color, #aaa);
+    }
+    .format input:checked + span {
+      color: var(--tg-theme-button-text-color, #fff);
+      background: var(--tg-theme-button-color, #2481cc);
+      border-color: var(--tg-theme-button-color, #2481cc);
+    }
+    .times { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .times label { margin-top: 15px; }
+    .note { margin-top: 7px; color: var(--tg-theme-hint-color, #777); font-size: 12px; }
+    .error { min-height: 22px; margin: 13px 2px 0; color: #d63333; font-weight: 650; }
+    button {
+      width: 100%; min-height: 54px; margin-top: 8px; border: 0; border-radius: 15px;
+      font: inherit; font-size: 18px; font-weight: 800;
+      color: var(--tg-theme-button-text-color, #fff);
+      background: var(--tg-theme-button-color, #2481cc);
+    }
+    button:disabled { opacity: .55; }
+  </style>
+</head>
+<body>
+  <h1>✨ Create Date</h1>
+  <p class="subtitle">Complete everything in one form</p>
+  <div class="card">
+    <label class="field" for="contact">Contact</label>
+    <input id="contact" type="text" maxlength="200" placeholder="Phone, @username or contact" autocomplete="off">
+
+    <label class="field" for="price">Price (USDT)</label>
+    <input id="price" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="288">
+
+    <label class="field">Format</label>
+    <div class="format">
+      <label><input type="radio" name="format" value="Incall" checked><span>🏠 Incall</span></label>
+      <label><input type="radio" name="format" value="Outcall"><span>🚕 Outcall</span></label>
+    </div>
+
+    <div class="times">
+      <label class="field" for="start">Start time
+        <input id="start" type="time" step="300">
+      </label>
+      <label class="field" for="end">End time
+        <input id="end" type="time" step="300">
+      </label>
+    </div>
+    <div class="note">Start: at least +5 min · Duration: at least 30 min</div>
+
+    <label class="field" for="persona">Persona</label>
+    <select id="persona"><option value="">Select Persona</option></select>
+  </div>
+  <div id="error" class="error"></div>
+  <button id="create" type="button">🚀 Create Date</button>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+    const personas = __PERSONA_OPTIONS__;
+    const contactInput = document.getElementById('contact');
+    const priceInput = document.getElementById('price');
+    const startInput = document.getElementById('start');
+    const endInput = document.getElementById('end');
+    const personaInput = document.getElementById('persona');
+    const error = document.getElementById('error');
+    const createButton = document.getElementById('create');
+    personas.forEach(name => personaInput.add(new Option(name, name)));
+
+    function roundUpFiveMinutes(date) {
+      const result = new Date(date.getTime());
+      result.setSeconds(0, 0);
+      result.setMinutes(Math.ceil(result.getMinutes() / 5) * 5);
+      if (result < date) result.setMinutes(result.getMinutes() + 5);
+      return result;
+    }
+    function timeValue(date) {
+      return String(date.getHours()).padStart(2, '0') + ':' +
+             String(date.getMinutes()).padStart(2, '0');
+    }
+    function dateFromTime(value, reference) {
+      const parts = value.split(':').map(Number);
+      const result = new Date(reference.getTime());
+      result.setHours(parts[0], parts[1], 0, 0);
+      return result;
+    }
+    function selectedStart() {
+      const now = new Date();
+      let start = dateFromTime(startInput.value, now);
+      if (start.getTime() < now.getTime() + 4 * 60000) start.setDate(start.getDate() + 1);
+      return start;
+    }
+    function selectedEnd(start) {
+      let end = dateFromTime(endInput.value, start);
+      if (end <= start) end.setDate(end.getDate() + 1);
+      return end;
+    }
+    function initializeTime() {
+      const start = roundUpFiveMinutes(new Date(Date.now() + 5 * 60000));
+      startInput.value = timeValue(start);
+      endInput.value = timeValue(new Date(start.getTime() + 60 * 60000));
+    }
+    startInput.addEventListener('change', () => {
+      if (!startInput.value) return;
+      endInput.value = timeValue(new Date(selectedStart().getTime() + 30 * 60000));
+    });
+    createButton.addEventListener('click', () => {
+      error.textContent = '';
+      const contact = contactInput.value.trim();
+      const price = priceInput.value.trim();
+      const format = document.querySelector('input[name="format"]:checked')?.value;
+      const persona = personaInput.value;
+      if (contact.length < 3) { error.textContent = 'Enter the Contact.'; return; }
+      if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Price.'; return; }
+      if (!startInput.value || !endInput.value) { error.textContent = 'Choose Start and End time.'; return; }
+      if (!persona) { error.textContent = 'Select a Persona.'; return; }
+      const start = selectedStart();
+      const end = selectedEnd(start);
+      if (start.getTime() < Date.now() + 4 * 60000) {
+        error.textContent = 'Start must be at least 5 minutes from now.';
+        initializeTime();
+        return;
+      }
+      if (end.getTime() < start.getTime() + 30 * 60000) {
+        error.textContent = 'Duration must be at least 30 minutes.';
+        return;
+      }
+      createButton.disabled = true;
+      tg.sendData(JSON.stringify({
+        type: 'create_date', contact, price, format, persona,
+        start_ts: Math.floor(start.getTime() / 1000),
+        end_ts: Math.floor(end.getTime() / 1000)
+      }));
+      setTimeout(() => tg.close(), 180);
+    });
+    initializeTime();
+  </script>
+</body>
+</html>"""
+    return html.replace(
+        "__PERSONA_OPTIONS__",
+        json.dumps(list(PERSONA_OPTIONS.values()), ensure_ascii=False),
+    ), 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 @app.route("/time-picker", methods=["GET"])
