@@ -1501,6 +1501,12 @@ def admin_panel_keyboard():
     )
     kb.add(InlineKeyboardButton("📋 CRM", callback_data="adm_crm"))
     kb.add(InlineKeyboardButton("💃 Revenue by Persona", callback_data="adm_persona_rev"))
+    kb.add(
+        InlineKeyboardButton(
+            "✏️ Edit Persona",
+            web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/edit-persona"),
+        )
+    )
     kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     return kb
@@ -3596,6 +3602,165 @@ def create_persona_page():
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
     }
+
+
+@app.route("/edit-persona", methods=["GET"])
+def edit_persona_page():
+    return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Edit Persona</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(16px + env(safe-area-inset-bottom));min-height:100dvh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}
+h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 10px;color:var(--tg-theme-hint-color,#777);font-size:14px}.card{padding:12px;border-radius:16px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}label{display:block;margin:10px 0 5px;font-size:14px;font-weight:700}label:first-child{margin-top:0}input,select{display:block;width:100%;min-width:0;min-height:44px;padding:8px 10px;border-radius:12px;border:1px solid var(--tg-theme-hint-color,#999);font:inherit;font-size:16px;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.note{margin-top:5px;color:var(--tg-theme-hint-color,#777);font-size:11px}.error{min-height:18px;margin:7px 2px 0;color:#d63333;font-size:13px;font-weight:650}button{position:sticky;bottom:max(6px,env(safe-area-inset-bottom));width:100%;min-height:48px;margin-top:4px;border:0;border-radius:14px;font:inherit;font-size:17px;font-weight:800;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}button:disabled{opacity:.55}
+</style></head><body>
+<h1>✏️ Edit Persona</h1><p class="sub">Choose a Persona and update its profile</p>
+<div class="card">
+<label for="persona">Persona</label><select id="persona"><option value="">Loading…</option></select>
+<label for="name">Name</label><input id="name" maxlength="50">
+<div class="row"><div><label for="hair">Hair color</label><select id="hair"><option value="">Select</option><option>Blonde</option><option>Brunette</option><option>Black</option><option>Brown</option><option>Red</option><option>Other</option></select></div>
+<div><label for="age">Age</label><select id="age"><option value="">Select</option></select></div></div>
+<label for="photos">Replace photos (optional)</label><input id="photos" type="file" accept="image/*" multiple>
+<div id="photoNote" class="note">Choose new photos only if you want to replace the existing ones.</div>
+</div><div id="error" class="error"></div><button id="save" type="button">💾 Save Persona</button>
+<script>
+const tg=window.Telegram.WebApp;tg.ready();tg.expand();
+const personaInput=document.getElementById('persona'),nameInput=document.getElementById('name'),hairInput=document.getElementById('hair'),ageInput=document.getElementById('age'),photosInput=document.getElementById('photos'),photoNote=document.getElementById('photoNote'),error=document.getElementById('error'),saveButton=document.getElementById('save');
+let personas=[];for(let age=18;age<=70;age++)ageInput.add(new Option(String(age),String(age)));
+function showPersona(){const item=personas.find(p=>String(p.id)===personaInput.value);if(!item)return;nameInput.value=item.name;hairInput.value=item.hair_color||'';ageInput.value=item.age||'';photoNote.textContent=`Existing photos: ${item.photo_count}. Choose new photos only to replace them.`;photosInput.value='';}
+personaInput.addEventListener('change',showPersona);
+async function loadPersonas(){try{const form=new FormData();form.append('init_data',tg.initData);const response=await fetch('/api/personas/manage',{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not load Personas');personas=result.personas;personaInput.innerHTML='<option value="">Select Persona</option>';personas.forEach(item=>personaInput.add(new Option(item.name,String(item.id))));}catch(e){error.textContent=e.message;}}
+async function compressPhoto(file){const image=await createImageBitmap(file);const scale=Math.min(1,1280/Math.max(image.width,image.height));const canvas=document.createElement('canvas');canvas.width=Math.round(image.width*scale);canvas.height=Math.round(image.height*scale);canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);image.close();const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.82));if(!blob)throw new Error('Could not process a photo');return blob;}
+saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('name',name);form.append('hair_color',hair);form.append('age',age);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');const response=await fetch(`/api/personas/${id}`,{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not update Persona');saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
+loadPersonas();
+</script></body></html>""", 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
+
+
+@app.route("/api/personas/manage", methods=["POST"])
+def manage_personas_api():
+    try:
+        user_id, _ = verify_telegram_webapp_user(request.form.get("init_data"))
+        if not is_admin(user_id):
+            return jsonify(error="Admin access required"), 403
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT id, name, hair_color, age,
+                       (CASE WHEN photo_1 IS NULL THEN 0 ELSE 1 END +
+                        CASE WHEN photo_2 IS NULL THEN 0 ELSE 1 END) AS photo_count
+                FROM personas
+                WHERE is_active = TRUE
+                ORDER BY LOWER(name), id
+                """
+            )
+            personas = [
+                {"id": row[0], "name": row[1], "hair_color": row[2], "age": row[3], "photo_count": row[4]}
+                for row in cur.fetchall()
+            ]
+        finally:
+            cur.close()
+            conn.close()
+        return jsonify(personas=personas)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        log("MANAGE PERSONAS API ERROR", repr(e))
+        return jsonify(error="Could not load Personas"), 500
+
+
+@app.route("/api/personas/<int:persona_id>", methods=["POST"])
+def update_persona_api(persona_id):
+    try:
+        user_id, telegram_user = verify_telegram_webapp_user(request.form.get("init_data"))
+        if not is_admin(user_id):
+            return jsonify(error="Admin access required"), 403
+        name = " ".join((request.form.get("name") or "").split()).strip()
+        hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
+        age = int(request.form.get("age", "0"))
+        if len(name) < 2 or len(name) > 50:
+            raise ValueError("Name must contain 2–50 characters")
+        if len(hair_color) < 2 or len(hair_color) > 30:
+            raise ValueError("Select a valid hair color")
+        if age < 18 or age > 99:
+            raise ValueError("Age must be between 18 and 99")
+        uploaded_files = [item for item in request.files.getlist("photos") if item.filename]
+        if len(uploaded_files) > 2:
+            raise ValueError("Maximum two photos")
+        photos = []
+        for uploaded in uploaded_files:
+            photo = uploaded.read(3 * 1024 * 1024 + 1)
+            if not photo or len(photo) > 3 * 1024 * 1024:
+                raise ValueError("Each photo must be smaller than 3 MB")
+            if photo.startswith(b"\xff\xd8\xff"):
+                mime = "image/jpeg"
+            elif photo.startswith(b"\x89PNG\r\n\x1a\n"):
+                mime = "image/png"
+            elif photo.startswith(b"RIFF") and photo[8:12] == b"WEBP":
+                mime = "image/webp"
+            else:
+                raise ValueError("Photos must be JPEG, PNG, or WebP")
+            photos.append((photo, mime))
+
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT name, hair_color, age FROM personas WHERE id = %s FOR UPDATE", (persona_id,))
+            existing = cur.fetchone()
+            if not existing:
+                conn.rollback()
+                return jsonify(error="Persona not found"), 404
+            old_name, old_hair, old_age = existing
+            if photos:
+                while len(photos) < 2:
+                    photos.append((None, None))
+                cur.execute(
+                    """
+                    UPDATE personas
+                    SET name=%s, hair_color=%s, age=%s,
+                        photo_1=%s, photo_1_mime=%s, photo_2=%s, photo_2_mime=%s,
+                        updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (name, hair_color, age, photos[0][0], photos[0][1], photos[1][0], photos[1][1], persona_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE personas SET name=%s, hair_color=%s, age=%s, updated_at=NOW() WHERE id=%s",
+                    (name, hair_color, age, persona_id),
+                )
+            if old_name.casefold() != name.casefold():
+                cur.execute("UPDATE orders SET profile_name=%s WHERE LOWER(profile_name)=LOWER(%s)", (name, old_name))
+            add_audit(
+                cur, user_id,
+                f"@{telegram_user.get('username')}" if telegram_user.get("username") else str(user_id),
+                "EDIT_PERSONA", "persona", persona_id,
+                f"name={old_name}; hair={old_hair}; age={old_age}",
+                f"name={name}; hair={hair_color}; age={age}",
+                f"photos_replaced={bool(photos)}",
+            )
+            conn.commit()
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return jsonify(error="A Persona with this name already exists"), 409
+        finally:
+            cur.close()
+            conn.close()
+        try:
+            bot.send_message(user_id, f"✅ Persona {old_name} updated to {name}.")
+        except Exception as e:
+            log("PERSONA UPDATED CONFIRMATION ERROR", user_id, repr(e))
+        return jsonify(ok=True, persona_id=persona_id, name=name)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        log("UPDATE PERSONA API ERROR", repr(e))
+        return jsonify(error="Could not update Persona"), 500
 
 
 @app.route("/api/personas", methods=["POST"])
