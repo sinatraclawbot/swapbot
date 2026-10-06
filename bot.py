@@ -3422,30 +3422,31 @@ def create_date_page():
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
     body {
-      margin: 0; padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+      margin: 0; padding: 12px 12px calc(14px + env(safe-area-inset-bottom));
+      width: 100%; min-height: 100dvh; overflow-x: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--tg-theme-text-color, #111);
       background: var(--tg-theme-bg-color, #fff);
     }
-    h1 { margin: 0 0 5px; font-size: 25px; }
-    .subtitle { margin: 0 0 20px; color: var(--tg-theme-hint-color, #777); }
+    h1 { margin: 0 0 3px; font-size: 22px; }
+    .subtitle { margin: 0 0 10px; font-size: 14px; color: var(--tg-theme-hint-color, #777); }
     .card {
-      padding: 16px; border-radius: 18px;
+      width: 100%; padding: 12px; border-radius: 16px;
       background: var(--tg-theme-secondary-bg-color, #f3f3f3);
     }
-    label.field { display: block; margin: 15px 0 7px; font-weight: 700; }
+    label.field { display: block; min-width: 0; margin: 10px 0 5px; font-size: 14px; font-weight: 700; }
     label.field:first-child { margin-top: 0; }
     input, select {
-      width: 100%; min-height: 50px; padding: 11px 12px;
+      display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 44px; padding: 8px 10px;
       border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #888) 55%, transparent);
-      border-radius: 13px; font: inherit; font-size: 17px;
+      border-radius: 12px; font: inherit; font-size: 16px;
       color: var(--tg-theme-text-color, #111);
       background: var(--tg-theme-bg-color, #fff);
     }
-    .format { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .format { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
     .format input { position: absolute; opacity: 0; pointer-events: none; }
     .format span {
-      display: block; padding: 13px; border-radius: 13px; text-align: center;
+      display: block; padding: 10px 6px; border-radius: 12px; text-align: center;
       font-weight: 700; border: 1px solid var(--tg-theme-hint-color, #aaa);
     }
     .format input:checked + span {
@@ -3453,17 +3454,34 @@ def create_date_page():
       background: var(--tg-theme-button-color, #2481cc);
       border-color: var(--tg-theme-button-color, #2481cc);
     }
-    .times { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .times label { margin-top: 15px; }
-    .note { margin-top: 7px; color: var(--tg-theme-hint-color, #777); font-size: 12px; }
-    .error { min-height: 22px; margin: 13px 2px 0; color: #d63333; font-weight: 650; }
+    .times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
+    .times label { min-width: 0; margin-top: 10px; }
+    .times input { min-width: 0; padding-left: 7px; padding-right: 4px; }
+    .note { margin-top: 5px; color: var(--tg-theme-hint-color, #777); font-size: 11px; }
+    .error { min-height: 18px; margin: 7px 2px 0; color: #d63333; font-size: 13px; font-weight: 650; }
     button {
-      width: 100%; min-height: 54px; margin-top: 8px; border: 0; border-radius: 15px;
-      font: inherit; font-size: 18px; font-weight: 800;
+      position: sticky; bottom: max(6px, env(safe-area-inset-bottom)); z-index: 5;
+      width: 100%; min-height: 48px; margin-top: 4px; border: 0; border-radius: 14px;
+      font: inherit; font-size: 17px; font-weight: 800;
       color: var(--tg-theme-button-text-color, #fff);
       background: var(--tg-theme-button-color, #2481cc);
     }
     button:disabled { opacity: .55; }
+    @media (max-width: 360px) {
+      body { padding-left: 8px; padding-right: 8px; }
+      .card { padding: 10px; }
+      .times { grid-template-columns: 1fr; gap: 0; }
+      .times label + label { margin-top: 7px; }
+    }
+    @media (max-height: 650px) {
+      h1 { font-size: 19px; }
+      .subtitle { display: none; }
+      body { padding-top: 7px; }
+      .card { padding-top: 9px; padding-bottom: 9px; }
+      label.field { margin-top: 7px; }
+      input, select { min-height: 40px; }
+      .format span { padding-top: 8px; padding-bottom: 8px; }
+    }
   </style>
 </head>
 <body>
