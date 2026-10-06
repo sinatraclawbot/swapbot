@@ -94,7 +94,7 @@ def gift_message(row):
 🔄 Swapper: {master_telegram_id or '—'}
 👤 Operator: {operator}
 📞 Contact: {contact_text or '—'}
-🏷 Initial price: {initial_price or 0} USDT
+🏷 Requested Gift: {initial_price or 0} USDT
 🎁 Final Gift: {paid_amount or 0} USDT
 💼 Swapper fee: {commission_amount or 0} USDT
 👆 Gift confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
@@ -577,7 +577,7 @@ async def create_group_async(order_id):
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
-Price: {price} USDT
+Gift: {price} USDT
 Operator: {client_label}
 Client: {contact_text}
 Format: {format_type}

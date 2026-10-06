@@ -1341,7 +1341,7 @@ Operator: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
 Payment: {payment_status or '—'}
-Initial price: {format_money(price)} USDT
+Requested Gift: {format_money(price)} USDT
 Final amount: {final_amount_text}
 Difference: {difference_text}
 Expected Date to return: {return_prediction}
@@ -2031,7 +2031,7 @@ def create_order(message):
 def get_contact(message):
     user_data[message.chat.id]["contact_text"] = message.text
     user_data[message.chat.id]["date_type"] = "—"
-    msg = bot.send_message(message.chat.id, "Enter price (USDT):")
+    msg = bot.send_message(message.chat.id, "Enter Gift (USDT):")
     bot.register_next_step_handler(msg, get_price)
 
 
@@ -2041,7 +2041,7 @@ def select_date_type(call):
         date_type = call.data.replace("dt_", "")
         user_data[call.from_user.id]["date_type"] = date_type
 
-        msg = bot.send_message(call.from_user.id, "Enter price (USDT):")
+        msg = bot.send_message(call.from_user.id, "Enter Gift (USDT):")
         bot.register_next_step_handler(msg, get_price)
         bot.answer_callback_query(call.id)
     except Exception as e:
@@ -2053,7 +2053,7 @@ def get_price(message):
     try:
         user_data[message.chat.id]["price"] = int(message.text)
     except ValueError:
-        msg = bot.send_message(message.chat.id, "Enter price as a number, for example 288")
+        msg = bot.send_message(message.chat.id, "Enter Gift as a number, for example 288")
         bot.register_next_step_handler(msg, get_price)
         return
 
@@ -2120,7 +2120,7 @@ def receive_time_picker(message):
             if price <= 0:
                 raise InvalidOperation
         except (InvalidOperation, ValueError):
-            bot.send_message(message.chat.id, "❌ Enter a positive Price.")
+            bot.send_message(message.chat.id, "❌ Enter a positive Gift amount.")
             return
         format_type = payload.get("format")
         if format_type not in ("Incall", "Outcall"):
@@ -2348,7 +2348,7 @@ def save_order(message, selected_persona=None, selected_user=None):
 Operator TG ID: {message.chat.id}
 Operator username: @{order_user.username if order_user.username else 'none'}
 Contact: {data['contact_text']}
-Price: {data['price']} USDT
+Gift: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
@@ -2385,7 +2385,7 @@ def send_order_to_masters(order_id, data):
     text = f"""🆕 New Date Request #{order_id}
 
 Contact: {data['contact_text']}
-Price: {data['price']} USDT
+Gift: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
@@ -3491,7 +3491,7 @@ def create_date_page():
     <label class="field" for="contact">Contact</label>
     <input id="contact" type="text" maxlength="200" placeholder="Phone, @username or contact" autocomplete="off">
 
-    <label class="field" for="price">Price (USDT)</label>
+    <label class="field" for="price">Gift (USDT)</label>
     <input id="price" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="288">
 
     <label class="field">Format</label>
@@ -3574,7 +3574,7 @@ def create_date_page():
       const format = document.querySelector('input[name="format"]:checked')?.value;
       const persona = personaInput.value;
       if (contact.length < 3) { error.textContent = 'Enter the Contact.'; return; }
-      if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Price.'; return; }
+      if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Gift amount.'; return; }
       if (!startInput.value || !endInput.value) { error.textContent = 'Choose Start and End time.'; return; }
       if (!persona) { error.textContent = 'Select a Persona.'; return; }
       const start = selectedStart();
