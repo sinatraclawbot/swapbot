@@ -3,6 +3,7 @@ import hashlib
 import queue
 import threading
 import time
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 import telebot
@@ -70,6 +71,7 @@ DB_POOL_MIN_CONNECTIONS = 1
 DB_POOL_MAX_CONNECTIONS = 12
 _db_pool = None
 _db_pool_lock = threading.Lock()
+BOT_TIMEZONE = ZoneInfo("Asia/Jerusalem")
 
 
 def normalize_contact_phone(value):
@@ -797,6 +799,50 @@ def format_keyboard():
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Incall", callback_data="fmt_Incall"))
     kb.add(InlineKeyboardButton("Outcall", callback_data="fmt_Outcall"))
+    return kb
+
+
+def time_choice_label(value, reference_date):
+    if value.date() == reference_date:
+        return value.strftime("%H:%M")
+    if value.date() == reference_date + timedelta(days=1):
+        return value.strftime("Tomorrow %H:%M")
+    return value.strftime("%d.%m %H:%M")
+
+
+def start_time_keyboard(now=None):
+    current_time = now or datetime.now(BOT_TIMEZONE)
+    rounded_time = current_time.replace(second=0, microsecond=0)
+    if current_time.second or current_time.microsecond:
+        rounded_time += timedelta(minutes=1)
+    kb = InlineKeyboardMarkup(row_width=2)
+    offsets = (5, 15, 30, 45, 60, 90, 120, 180, 240, 360)
+    buttons = []
+    for minutes in offsets:
+        value = rounded_time + timedelta(minutes=minutes)
+        buttons.append(
+            InlineKeyboardButton(
+                time_choice_label(value, current_time.date()),
+                callback_data=f"starttime_{int(value.timestamp())}",
+            )
+        )
+    kb.add(*buttons)
+    return kb
+
+
+def end_time_keyboard(start_at):
+    kb = InlineKeyboardMarkup(row_width=2)
+    durations = (30, 45, 60, 90, 120, 180, 240, 360)
+    buttons = []
+    for minutes in durations:
+        value = start_at + timedelta(minutes=minutes)
+        buttons.append(
+            InlineKeyboardButton(
+                time_choice_label(value, start_at.date()),
+                callback_data=f"endtime_{int(value.timestamp())}",
+            )
+        )
+    kb.add(*buttons)
     return kb
 
 
@@ -2019,27 +2065,67 @@ def select_format(call):
         fmt = call.data.replace("fmt_", "")
         user_data[call.from_user.id]["format_type"] = fmt
 
-        msg = bot.send_message(call.from_user.id, "Enter time from:")
-        bot.register_next_step_handler(msg, get_time_from)
+        bot.send_message(
+            call.from_user.id,
+            "🕐 Select start time (the first option is 5 minutes from now):",
+            reply_markup=start_time_keyboard(),
+        )
         bot.answer_callback_query(call.id)
     except Exception as e:
         log("FORMAT ERROR", repr(e))
         notify_admin(f"❌ FORMAT ERROR: {repr(e)}")
 
 
-def get_time_from(message):
-    user_data[message.chat.id]["time_from"] = message.text
-    msg = bot.send_message(message.chat.id, "Enter time to:")
-    bot.register_next_step_handler(msg, get_time_to)
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("starttime_") and call.data[10:].isdigit()
+)
+def select_start_time(call):
+    if call.from_user.id not in user_data:
+        bot.answer_callback_query(call.id, "Time selection expired. Create Date again.", show_alert=True)
+        return
+    start_at = datetime.fromtimestamp(int(call.data[10:]), BOT_TIMEZONE)
+    minimum_start = datetime.now(BOT_TIMEZONE) + timedelta(minutes=4)
+    if start_at < minimum_start:
+        bot.answer_callback_query(call.id, "This time has passed. Select format again.", show_alert=True)
+        return
+    today = datetime.now(BOT_TIMEZONE).date()
+    user_data[call.from_user.id]["meeting_at"] = start_at
+    user_data[call.from_user.id]["time_from"] = time_choice_label(start_at, today)
+    bot.edit_message_text(
+        f"🕐 Start time: {start_at.strftime('%H:%M')}\n\n"
+        "Select end time (minimum duration is 30 minutes):",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=end_time_keyboard(start_at),
+    )
+    bot.answer_callback_query(call.id)
 
 
-def get_time_to(message):
-    user_data[message.chat.id]["time_to"] = message.text
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("endtime_") and call.data[8:].isdigit()
+)
+def select_end_time(call):
+    data = user_data.get(call.from_user.id)
+    if not data or "meeting_at" not in data:
+        bot.answer_callback_query(call.id, "Time selection expired. Create Date again.", show_alert=True)
+        return
+    end_at = datetime.fromtimestamp(int(call.data[8:]), BOT_TIMEZONE)
+    start_at = data["meeting_at"]
+    if end_at < start_at + timedelta(minutes=30):
+        bot.answer_callback_query(call.id, "End time must be at least 30 minutes later", show_alert=True)
+        return
+    data["time_to"] = time_choice_label(end_at, datetime.now(BOT_TIMEZONE).date())
+    bot.edit_message_text(
+        f"✅ Time selected: {data['time_from']}–{data['time_to']}",
+        call.message.chat.id,
+        call.message.message_id,
+    )
     bot.send_message(
-        message.chat.id,
+        call.from_user.id,
         "Select Persona:",
         reply_markup=persona_keyboard(),
     )
+    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("persona_"))
@@ -2100,6 +2186,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 incall_outcall,
                 time_from,
                 time_to,
+                meeting_at,
                 profile_name,
                 normalized_contact_phone,
                 is_returning_client,
@@ -2108,7 +2195,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 order_status,
                 payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
             RETURNING id
             """,
             (
@@ -2120,6 +2207,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 data["format_type"],
                 data["time_from"],
                 data["time_to"],
+                data["meeting_at"],
                 data["profile_name"],
                 normalized_phone,
                 is_returning_client,
