@@ -1,5 +1,6 @@
 import os
 import hashlib
+import json
 import queue
 import threading
 import time
@@ -16,6 +17,7 @@ from telebot.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    WebAppInfo,
 )
 from group_worker import (
     cleanup_archive_channels,
@@ -2065,15 +2067,62 @@ def select_format(call):
         fmt = call.data.replace("fmt_", "")
         user_data[call.from_user.id]["format_type"] = fmt
 
+        time_picker_keyboard = InlineKeyboardMarkup()
+        time_picker_keyboard.add(
+            InlineKeyboardButton(
+                "🎡 Open time roulette",
+                web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/time-picker"),
+            )
+        )
         bot.send_message(
             call.from_user.id,
-            "🕐 Select start time (the first option is 5 minutes from now):",
-            reply_markup=start_time_keyboard(),
+            "🕐 Choose start and end time with the roulette:",
+            reply_markup=time_picker_keyboard,
         )
         bot.answer_callback_query(call.id)
     except Exception as e:
         log("FORMAT ERROR", repr(e))
         notify_admin(f"❌ FORMAT ERROR: {repr(e)}")
+
+
+@bot.message_handler(content_types=["web_app_data"])
+def receive_time_picker(message):
+    data = user_data.get(message.from_user.id)
+    if data is None:
+        bot.send_message(message.chat.id, "Time selection expired. Tap Create Date again.")
+        return
+    try:
+        payload = json.loads(message.web_app_data.data)
+        if payload.get("type") != "date_time":
+            raise ValueError("Unexpected picker response")
+        start_at = datetime.fromtimestamp(int(payload["start_ts"]), BOT_TIMEZONE)
+        end_at = datetime.fromtimestamp(int(payload["end_ts"]), BOT_TIMEZONE)
+        now = datetime.now(BOT_TIMEZONE)
+        if start_at < now + timedelta(minutes=4):
+            raise ValueError("Start time must be at least 5 minutes from now")
+        if start_at > now + timedelta(days=7):
+            raise ValueError("Start time cannot be more than 7 days ahead")
+        if end_at < start_at + timedelta(minutes=30):
+            raise ValueError("End time must be at least 30 minutes after start")
+        if end_at > start_at + timedelta(hours=24):
+            raise ValueError("Date duration cannot exceed 24 hours")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
+        bot.send_message(message.chat.id, f"❌ Invalid time: {e}. Open the roulette again.")
+        return
+
+    today = now.date()
+    data["meeting_at"] = start_at
+    data["time_from"] = time_choice_label(start_at, today)
+    data["time_to"] = time_choice_label(end_at, today)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Time selected: {data['time_from']}–{data['time_to']}",
+    )
+    bot.send_message(
+        message.chat.id,
+        "Select Persona:",
+        reply_markup=persona_keyboard(),
+    )
 
 
 @bot.callback_query_handler(
@@ -3320,6 +3369,122 @@ def finalize_dispute(call):
     )
     dispute_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
+
+
+@app.route("/time-picker", methods=["GET"])
+def time_picker_page():
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Date time roulette</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px 18px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--tg-theme-text-color, #111);
+      background: var(--tg-theme-bg-color, #fff);
+    }
+    h1 { margin: 0 0 8px; font-size: 23px; }
+    p { margin: 0 0 22px; color: var(--tg-theme-hint-color, #777); line-height: 1.4; }
+    label { display: block; margin: 18px 0 7px; font-weight: 700; }
+    input {
+      width: 100%; min-height: 54px; padding: 12px;
+      border: 1px solid var(--tg-theme-hint-color, #aaa); border-radius: 14px;
+      font: inherit; font-size: 18px;
+      color: var(--tg-theme-text-color, #111);
+      background: var(--tg-theme-secondary-bg-color, #f3f3f3);
+    }
+    .note { margin-top: 10px; font-size: 13px; }
+    .error { min-height: 22px; margin-top: 14px; color: #d63333; font-weight: 600; }
+    button {
+      width: 100%; min-height: 54px; margin-top: 8px; border: 0; border-radius: 14px;
+      font: inherit; font-size: 18px; font-weight: 750;
+      color: var(--tg-theme-button-text-color, #fff);
+      background: var(--tg-theme-button-color, #2481cc);
+    }
+  </style>
+</head>
+<body>
+  <h1>🎡 Choose Date time</h1>
+  <p>Tap a field to open the time roulette.</p>
+  <label for="start">Start</label>
+  <input id="start" type="datetime-local" step="300">
+  <div class="note">Earliest start: 5 minutes from now</div>
+  <label for="end">End</label>
+  <input id="end" type="datetime-local" step="300">
+  <div class="note">Minimum duration: 30 minutes</div>
+  <div id="error" class="error"></div>
+  <button id="confirm" type="button">✅ Confirm time</button>
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+    const startInput = document.getElementById('start');
+    const endInput = document.getElementById('end');
+    const error = document.getElementById('error');
+
+    function roundUpFiveMinutes(date) {
+      const result = new Date(date.getTime());
+      result.setSeconds(0, 0);
+      result.setMinutes(Math.ceil(result.getMinutes() / 5) * 5);
+      if (result < date) result.setMinutes(result.getMinutes() + 5);
+      return result;
+    }
+    function inputValue(date) {
+      const offset = date.getTimezoneOffset() * 60000;
+      return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+    }
+    function initialize() {
+      const minimumStart = roundUpFiveMinutes(new Date(Date.now() + 5 * 60000));
+      const defaultEnd = new Date(minimumStart.getTime() + 60 * 60000);
+      startInput.min = inputValue(minimumStart);
+      startInput.value = inputValue(minimumStart);
+      endInput.min = inputValue(new Date(minimumStart.getTime() + 30 * 60000));
+      endInput.value = inputValue(defaultEnd);
+    }
+    startInput.addEventListener('change', () => {
+      const start = new Date(startInput.value);
+      if (Number.isNaN(start.getTime())) return;
+      const minimumEnd = new Date(start.getTime() + 30 * 60000);
+      endInput.min = inputValue(minimumEnd);
+      if (!endInput.value || new Date(endInput.value) < minimumEnd) {
+        endInput.value = inputValue(minimumEnd);
+      }
+    });
+    document.getElementById('confirm').addEventListener('click', () => {
+      error.textContent = '';
+      const start = new Date(startInput.value);
+      const end = new Date(endInput.value);
+      const now = new Date();
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        error.textContent = 'Choose both start and end time.';
+        return;
+      }
+      if (start.getTime() < now.getTime() + 4 * 60000) {
+        error.textContent = 'Start must be at least 5 minutes from now.';
+        initialize();
+        return;
+      }
+      if (end.getTime() < start.getTime() + 30 * 60000) {
+        error.textContent = 'End must be at least 30 minutes after start.';
+        return;
+      }
+      tg.sendData(JSON.stringify({
+        type: 'date_time',
+        start_ts: Math.floor(start.getTime() / 1000),
+        end_ts: Math.floor(end.getTime() / 1000)
+      }));
+      setTimeout(() => tg.close(), 150);
+    });
+    initialize();
+  </script>
+</body>
+</html>""", 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 @app.route("/", methods=["GET"])
