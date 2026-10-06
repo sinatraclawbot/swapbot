@@ -757,6 +757,7 @@ def parse_admin_balance_command(message, command_name):
 
 def main_menu(user_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    persona_token = create_webapp_access_token(user_id, 7 * 24 * 60 * 60) if user_id else ""
     markup.add(
         KeyboardButton(
             "Create Date",
@@ -766,7 +767,9 @@ def main_menu(user_id=None):
     markup.add(
         KeyboardButton(
             "Create Persona",
-            web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/create-persona"),
+            web_app=WebAppInfo(
+                url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/create-persona?token={persona_token}"
+            ),
         )
     )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
@@ -948,6 +951,40 @@ def verify_telegram_webapp_user(init_data, max_age_seconds=3600):
     if user_id <= 0:
         raise ValueError("Telegram user is missing")
     return user_id, user
+
+
+def create_webapp_access_token(user_id, ttl_seconds=3600):
+    expires_at = int(time.time()) + ttl_seconds
+    payload = f"{int(user_id)}:{expires_at}"
+    signature = hmac.new(
+        BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{int(user_id)}.{expires_at}.{signature}"
+
+
+def verify_webapp_access_token(token):
+    try:
+        user_id_raw, expires_raw, received_signature = (token or "").split(".", 2)
+        user_id = int(user_id_raw)
+        expires_at = int(expires_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Mini App authorization is missing")
+    payload = f"{user_id}:{expires_at}"
+    expected_signature = hmac.new(
+        BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, received_signature):
+        raise ValueError("Mini App authorization is invalid")
+    if expires_at < int(time.time()):
+        raise ValueError("Mini App authorization expired. Reopen the bot menu.")
+    return user_id, {"id": user_id}
+
+
+def verify_webapp_request(form):
+    init_data = form.get("init_data")
+    if init_data:
+        return verify_telegram_webapp_user(init_data)
+    return verify_webapp_access_token(form.get("access_token"))
 
 
 def canonical_persona_name(value):
@@ -1489,7 +1526,7 @@ def open_master_lead(call):
     bot.answer_callback_query(call.id)
 
 
-def admin_panel_keyboard():
+def admin_panel_keyboard(user_id):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
@@ -1504,7 +1541,10 @@ def admin_panel_keyboard():
     kb.add(
         InlineKeyboardButton(
             "✏️ Edit Persona",
-            web_app=WebAppInfo(url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/edit-persona"),
+            web_app=WebAppInfo(
+                url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/edit-persona?token="
+                f"{create_webapp_access_token(user_id)}"
+            ),
         )
     )
     kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
@@ -1525,7 +1565,11 @@ def show_admin_panel(message):
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
-    bot.send_message(message.chat.id, "🛠 Admin Panel", reply_markup=admin_panel_keyboard())
+    bot.send_message(
+        message.chat.id,
+        "🛠 Admin Panel",
+        reply_markup=admin_panel_keyboard(message.from_user.id),
+    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_crm")
@@ -3557,6 +3601,7 @@ def create_persona_page():
   <button id="create" type="button">✨ Create Persona</button>
   <script>
     const tg=window.Telegram.WebApp; tg.ready(); tg.expand();
+    const accessToken=new URLSearchParams(window.location.search).get('token')||'';
     const nameInput=document.getElementById('name'), hairInput=document.getElementById('hair');
     const ageInput=document.getElementById('age'), photosInput=document.getElementById('photos');
     const error=document.getElementById('error'), createButton=document.getElementById('create');
@@ -3587,7 +3632,7 @@ def create_persona_page():
       if(files.length<1||files.length>2){error.textContent='Choose one or two photos.';return;}
       createButton.disabled=true; createButton.textContent='Uploading…';
       try{
-        const form=new FormData(); form.append('init_data',tg.initData); form.append('name',name);
+        const form=new FormData(); form.append('init_data',tg.initData); form.append('access_token',accessToken); form.append('name',name);
         form.append('hair_color',hair); form.append('age',age);
         for(const file of files) form.append('photos',await compressPhoto(file),'persona.jpg');
         const response=await fetch('/api/personas',{method:'POST',body:form});
@@ -3626,13 +3671,14 @@ h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 10px;color:var(--tg-theme-hint-
 </div><div id="error" class="error"></div><button id="save" type="button">💾 Save Persona</button>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();
+const accessToken=new URLSearchParams(window.location.search).get('token')||'';
 const personaInput=document.getElementById('persona'),nameInput=document.getElementById('name'),hairInput=document.getElementById('hair'),ageInput=document.getElementById('age'),photosInput=document.getElementById('photos'),photoNote=document.getElementById('photoNote'),error=document.getElementById('error'),saveButton=document.getElementById('save');
 let personas=[];for(let age=18;age<=70;age++)ageInput.add(new Option(String(age),String(age)));
 function showPersona(){const item=personas.find(p=>String(p.id)===personaInput.value);if(!item)return;nameInput.value=item.name;hairInput.value=item.hair_color||'';ageInput.value=item.age||'';photoNote.textContent=`Existing photos: ${item.photo_count}. Choose new photos only to replace them.`;photosInput.value='';}
 personaInput.addEventListener('change',showPersona);
-async function loadPersonas(){try{const form=new FormData();form.append('init_data',tg.initData);const response=await fetch('/api/personas/manage',{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not load Personas');personas=result.personas;personaInput.innerHTML='<option value="">Select Persona</option>';personas.forEach(item=>personaInput.add(new Option(item.name,String(item.id))));}catch(e){error.textContent=e.message;}}
+async function loadPersonas(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);const response=await fetch('/api/personas/manage',{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not load Personas');personas=result.personas;personaInput.innerHTML='<option value="">Select Persona</option>';personas.forEach(item=>personaInput.add(new Option(item.name,String(item.id))));}catch(e){error.textContent=e.message;}}
 async function compressPhoto(file){const image=await createImageBitmap(file);const scale=Math.min(1,1280/Math.max(image.width,image.height));const canvas=document.createElement('canvas');canvas.width=Math.round(image.width*scale);canvas.height=Math.round(image.height*scale);canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);image.close();const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.82));if(!blob)throw new Error('Could not process a photo');return blob;}
-saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('name',name);form.append('hair_color',hair);form.append('age',age);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');const response=await fetch(`/api/personas/${id}`,{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not update Persona');saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
+saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('name',name);form.append('hair_color',hair);form.append('age',age);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');const response=await fetch(`/api/personas/${id}`,{method:'POST',body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not update Persona');saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
 loadPersonas();
 </script></body></html>""", 200, {
         "Content-Type": "text/html; charset=utf-8",
@@ -3643,7 +3689,7 @@ loadPersonas();
 @app.route("/api/personas/manage", methods=["POST"])
 def manage_personas_api():
     try:
-        user_id, _ = verify_telegram_webapp_user(request.form.get("init_data"))
+        user_id, _ = verify_webapp_request(request.form)
         if not is_admin(user_id):
             return jsonify(error="Admin access required"), 403
         conn = get_conn()
@@ -3677,7 +3723,7 @@ def manage_personas_api():
 @app.route("/api/personas/<int:persona_id>", methods=["POST"])
 def update_persona_api(persona_id):
     try:
-        user_id, telegram_user = verify_telegram_webapp_user(request.form.get("init_data"))
+        user_id, telegram_user = verify_webapp_request(request.form)
         if not is_admin(user_id):
             return jsonify(error="Admin access required"), 403
         name = " ".join((request.form.get("name") or "").split()).strip()
@@ -3766,7 +3812,7 @@ def update_persona_api(persona_id):
 @app.route("/api/personas", methods=["POST"])
 def create_persona_api():
     try:
-        user_id, telegram_user = verify_telegram_webapp_user(request.form.get("init_data"))
+        user_id, telegram_user = verify_webapp_request(request.form)
         name = " ".join((request.form.get("name") or "").split()).strip()
         hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
         age = int(request.form.get("age", "0"))
