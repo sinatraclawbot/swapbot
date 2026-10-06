@@ -3378,7 +3378,7 @@ def time_picker_page():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Date time roulette</title>
+  <title>Time roulette</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root { color-scheme: light dark; }
@@ -3410,13 +3410,13 @@ def time_picker_page():
   </style>
 </head>
 <body>
-  <h1>🎡 Choose Date time</h1>
+  <h1>🎡 Choose time</h1>
   <p>Tap a field to open the time roulette.</p>
   <label for="start">Start</label>
-  <input id="start" type="datetime-local" step="300">
+  <input id="start" type="time" step="300">
   <div class="note">Earliest start: 5 minutes from now</div>
   <label for="end">End</label>
-  <input id="end" type="datetime-local" step="300">
+  <input id="end" type="time" step="300">
   <div class="note">Minimum duration: 30 minutes</div>
   <div id="error" class="error"></div>
   <button id="confirm" type="button">✅ Confirm time</button>
@@ -3435,31 +3435,49 @@ def time_picker_page():
       if (result < date) result.setMinutes(result.getMinutes() + 5);
       return result;
     }
-    function inputValue(date) {
-      const offset = date.getTimezoneOffset() * 60000;
-      return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+    function timeValue(date) {
+      return String(date.getHours()).padStart(2, '0') + ':' +
+             String(date.getMinutes()).padStart(2, '0');
+    }
+    function dateFromTime(value, reference) {
+      const parts = value.split(':').map(Number);
+      const result = new Date(reference.getTime());
+      result.setHours(parts[0], parts[1], 0, 0);
+      return result;
+    }
+    function selectedStart() {
+      const now = new Date();
+      let start = dateFromTime(startInput.value, now);
+      if (start.getTime() < now.getTime() + 4 * 60000) {
+        start.setDate(start.getDate() + 1);
+      }
+      return start;
+    }
+    function selectedEnd(start) {
+      let end = dateFromTime(endInput.value, start);
+      if (end <= start) end.setDate(end.getDate() + 1);
+      return end;
     }
     function initialize() {
       const minimumStart = roundUpFiveMinutes(new Date(Date.now() + 5 * 60000));
       const defaultEnd = new Date(minimumStart.getTime() + 60 * 60000);
-      startInput.min = inputValue(minimumStart);
-      startInput.value = inputValue(minimumStart);
-      endInput.min = inputValue(new Date(minimumStart.getTime() + 30 * 60000));
-      endInput.value = inputValue(defaultEnd);
+      startInput.value = timeValue(minimumStart);
+      endInput.value = timeValue(defaultEnd);
     }
     startInput.addEventListener('change', () => {
-      const start = new Date(startInput.value);
+      const start = selectedStart();
       if (Number.isNaN(start.getTime())) return;
       const minimumEnd = new Date(start.getTime() + 30 * 60000);
-      endInput.min = inputValue(minimumEnd);
-      if (!endInput.value || new Date(endInput.value) < minimumEnd) {
-        endInput.value = inputValue(minimumEnd);
-      }
+      endInput.value = timeValue(minimumEnd);
     });
     document.getElementById('confirm').addEventListener('click', () => {
       error.textContent = '';
-      const start = new Date(startInput.value);
-      const end = new Date(endInput.value);
+      if (!startInput.value || !endInput.value) {
+        error.textContent = 'Choose both start and end time.';
+        return;
+      }
+      const start = selectedStart();
+      const end = selectedEnd(start);
       const now = new Date();
       if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
         error.textContent = 'Choose both start and end time.';
