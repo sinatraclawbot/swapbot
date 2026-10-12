@@ -3562,7 +3562,7 @@ def monthly_leads_page():
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Cycle Gift & Dispute</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:var(--tg-theme-hint-color,#777);font-size:14px}.picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-radius:15px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}input,button{min-height:44px;border-radius:12px;font:inherit;font-size:16px}input{min-width:0;padding:7px 10px;border:1px solid var(--tg-theme-hint-color,#999);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}button{padding:8px 16px;border:0;font-weight:750;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}.error{min-height:18px;margin:7px 2px;color:#d63333;font-size:13px;font-weight:650}.summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 14px}.stat{padding:12px;border-radius:14px;text-align:center;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.stat strong{display:block;font-size:22px}.section{margin:14px 0 7px;font-size:19px}.lead{margin:7px 0;padding:11px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3);line-height:1.38;font-size:14px}.lead b{font-size:16px}.muted{color:var(--tg-theme-hint-color,#777)}.empty{padding:14px;text-align:center;color:var(--tg-theme-hint-color,#777)}
+:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:var(--tg-theme-hint-color,#777);font-size:14px}.picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-radius:15px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}input,button{min-height:44px;border-radius:12px;font:inherit;font-size:16px}input{min-width:0;padding:7px 10px;border:1px solid var(--tg-theme-hint-color,#999);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}button{padding:8px 16px;border:0;font-weight:750;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}.error{min-height:18px;margin:7px 2px;color:#d63333;font-size:13px;font-weight:650}.summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 14px}.stat{padding:12px;border-radius:14px;text-align:center;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.stat strong{display:block;font-size:22px}.section{margin:14px 0 7px;font-size:19px}.lead{margin:7px 0;padding:11px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3);line-height:1.38;font-size:14px}.lead b{font-size:16px}.muted{color:var(--tg-theme-hint-color,#777)}.empty{padding:14px;text-align:center;color:var(--tg-theme-hint-color,#777)}.chart-wrap{overflow-x:auto;padding:10px 6px 6px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.chart{display:flex;align-items:flex-end;gap:5px;min-width:720px;height:180px;border-bottom:1px solid var(--tg-theme-hint-color,#999)}.day{display:flex;flex:1;min-width:18px;height:100%;flex-direction:column;justify-content:flex-end;align-items:center}.bar{width:100%;min-height:2px;border-radius:5px 5px 0 0;background:var(--tg-theme-button-color,#2481cc)}.day small{height:27px;padding-top:4px;font-size:9px;color:var(--tg-theme-hint-color,#777)}.chart-note{margin-top:7px;font-size:12px;color:var(--tg-theme-hint-color,#777)}
 </style></head><body>
 <h1>📅 Cycle leads</h1><p class="sub">Gift clients and Dispute leads · cycle 8 → 8</p>
 <div class="picker"><input id="month" type="month"><button id="load">Show</button></div>
@@ -3574,7 +3574,8 @@ function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&a
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
 function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
 function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('month',monthInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Cycle: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div></div><h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+function chart(days){const max=Math.max(1,...days.map(day=>day.leads));return `<div class="chart-wrap"><div class="chart">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.leads} leads, ${day.gifts} Gift, ${day.disputes} Dispute"><div class="bar" style="height:${Math.max(2,day.leads/max*140)}px"></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="chart-note">Bar = created Date leads · tap/hold a bar for Gift and Dispute details</div></div>`}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('month',monthInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Cycle: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div><div class="stat"><strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat"><strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat"><strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
 document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
@@ -3636,6 +3637,16 @@ def monthly_leads_api():
                 (month_start, month_end),
             )
             dispute_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT created_at
+                FROM orders
+                WHERE created_at >= %s AND created_at < %s
+                ORDER BY created_at
+                """,
+                (month_start, month_end),
+            )
+            lead_created_rows = cur.fetchall()
         finally:
             cur.close()
             conn.close()
@@ -3662,6 +3673,50 @@ def monthly_leads_api():
             for row in dispute_rows
         ]
         total_gift = sum((Decimal(row[6] or 0) for row in gift_rows), Decimal("0"))
+
+        cycle_days = []
+        day_cursor = month_start.date()
+        while day_cursor < month_end.date():
+            cycle_days.append({
+                "date": day_cursor.isoformat(),
+                "label": day_cursor.strftime("%d.%m"),
+                "leads": 0,
+                "gifts": 0,
+                "disputes": 0,
+            })
+            day_cursor += timedelta(days=1)
+        days_by_date = {item["date"]: item for item in cycle_days}
+        hour_counts = [0] * 24
+
+        for (created_at,) in lead_created_rows:
+            local_created_at = created_at.astimezone(BOT_TIMEZONE)
+            day = days_by_date.get(local_created_at.date().isoformat())
+            if day:
+                day["leads"] += 1
+            hour_counts[local_created_at.hour] += 1
+        for row in gift_rows:
+            day = days_by_date.get(row[7].astimezone(BOT_TIMEZONE).date().isoformat())
+            if day:
+                day["gifts"] += 1
+        for row in dispute_rows:
+            day = days_by_date.get(row[7].astimezone(BOT_TIMEZONE).date().isoformat())
+            if day:
+                day["disputes"] += 1
+
+        total_leads = len(lead_created_rows)
+        best_day_data = max(cycle_days, key=lambda item: item["leads"])
+        best_hour_number = max(range(24), key=lambda hour: hour_counts[hour])
+        if total_leads:
+            best_day_date = datetime.strptime(best_day_data["date"], "%Y-%m-%d")
+            best_day = best_day_date.strftime("%d.%m %a")
+            best_hour = f"{best_hour_number:02d}:00–{(best_hour_number + 1) % 24:02d}:00"
+            conversion = (
+                Decimal(len(gift_rows)) * Decimal("100") / Decimal(total_leads)
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            best_day = "—"
+            best_hour = "—"
+            conversion = Decimal("0.00")
         return jsonify(
             month=month_value,
             cycle_label=(
@@ -3671,6 +3726,15 @@ def monthly_leads_api():
             gifts=gifts,
             disputes=disputes,
             total_gift=format_money(total_gift),
+            overall={
+                "total_leads": total_leads,
+                "conversion": str(conversion),
+                "best_day": best_day,
+                "best_day_count": best_day_data["leads"] if total_leads else 0,
+                "best_hour": best_hour,
+                "best_hour_count": hour_counts[best_hour_number] if total_leads else 0,
+            },
+            daily=cycle_days,
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400
