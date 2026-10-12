@@ -3566,17 +3566,18 @@ def monthly_leads_page():
 .bars{display:flex;align-items:flex-end;gap:2px;width:100%;height:145px}.bar-col{display:flex;flex:1;height:100%;flex-direction:column;justify-content:flex-end;align-items:center}.bar-col .count{height:14px;font-size:9px;font-weight:700}.bar-col .bar{width:100%;min-height:0}.bar.gift{background:#2fbf71}.bar.dispute{background:#ef5350}.legend{display:flex;gap:14px;margin:7px 2px 0;font-size:12px;font-weight:650}.legend i{display:inline-block;width:10px;height:10px;margin-right:4px;border-radius:3px}.legend .gift{background:#2fbf71}.legend .dispute{background:#ef5350}
 </style></head><body>
 <h1>📅 Leads report</h1><p class="sub">Choose an 8→8 cycle or any custom date range</p>
-<div class="picker"><select id="mode"><option value="cycle">Cycle 8 → 8</option><option value="custom">Custom dates</option></select><input id="month" type="month"><div id="custom" class="custom hidden"><input id="startDate" type="date" aria-label="Start date"><input id="endDate" type="date" aria-label="End date"></div><button id="load">Show</button></div>
+<div class="picker"><select id="mode"><option value="cycle">Cycle 8 → 8</option><option value="custom">Custom dates</option></select><input id="month" type="month"><div id="custom" class="custom hidden"><input id="startDate" type="date" aria-label="Start date"><input id="endDate" type="date" aria-label="End date"></div><select id="operator"><option value="">All Operators</option></select><select id="swapper"><option value="">All Swappers</option></select><select id="persona"><option value="">All Personas</option></select><button id="load">Show</button></div>
 <div id="error" class="error"></div><div id="content"></div>
 <script>
-const tg=window.Telegram.WebApp;tg.ready();tg.expand();const accessToken=new URLSearchParams(location.search).get('token')||'',modeInput=document.getElementById('mode'),monthInput=document.getElementById('month'),customInput=document.getElementById('custom'),startInput=document.getElementById('startDate'),endInput=document.getElementById('endDate'),error=document.getElementById('error'),content=document.getElementById('content');
+const tg=window.Telegram.WebApp;tg.ready();tg.expand();const accessToken=new URLSearchParams(location.search).get('token')||'',modeInput=document.getElementById('mode'),monthInput=document.getElementById('month'),customInput=document.getElementById('custom'),startInput=document.getElementById('startDate'),endInput=document.getElementById('endDate'),operatorInput=document.getElementById('operator'),swapperInput=document.getElementById('swapper'),personaInput=document.getElementById('persona'),error=document.getElementById('error'),content=document.getElementById('content');
 const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;monthInput.value=today.slice(0,7);endInput.value=today;const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);startInput.value=`${weekAgo.getFullYear()}-${String(weekAgo.getMonth()+1).padStart(2,'0')}-${String(weekAgo.getDate()).padStart(2,'0')}`;
 function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
 function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
 function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
 function chart(days){const max=Math.max(1,...days.flatMap(day=>[day.gifts,day.disputes])),width=Math.max(720,days.length*34),height=value=>value?Math.max(4,value/max*115):0;return `<div class="chart-wrap"><div class="chart" style="min-width:${width}px">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.gifts} Gift, ${day.disputes} Dispute"><div class="bars"><div class="bar-col"><span class="count">${day.gifts||''}</span><div class="bar gift" style="height:${height(day.gifts)}px"></div></div><div class="bar-col"><span class="count">${day.disputes||''}</span><div class="bar dispute" style="height:${height(day.disputes)}px"></div></div></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="legend"><span><i class="gift"></i>Gift</span><span><i class="dispute"></i>Dispute</span></div><div class="chart-note">Daily results by date</div></div>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div><div class="stat"><strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat"><strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat"><strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+function fillSelect(select,items,allLabel){const selected=select.value;select.innerHTML=`<option value="">${allLabel}</option>`+items.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');if([...select.options].some(option=>option.value===selected))select.value=selected}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);form.append('operator',operatorInput.value);form.append('swapper',swapperInput.value);form.append('persona',personaInput.value);const data=await postForm('/api/monthly-leads',form);fillSelect(operatorInput,data.filters.operators,'All Operators');fillSelect(swapperInput,data.filters.swappers,'All Swappers');fillSelect(personaInput,data.filters.personas,'All Personas');content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div><div class="stat"><strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat"><strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat"><strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
 modeInput.addEventListener('change',()=>{const custom=modeInput.value==='custom';monthInput.classList.toggle('hidden',custom);customInput.classList.toggle('hidden',!custom)});document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
@@ -3628,11 +3629,71 @@ def monthly_leads_api():
         if month_start.year < 2020 or month_start.year > datetime.now(BOT_TIMEZONE).year + 1:
             raise ValueError("Selected period is outside the allowed range")
 
+        operator_filter = (request.form.get("operator") or "").strip()
+        swapper_filter = (request.form.get("swapper") or "").strip()
+        persona_filter = (request.form.get("persona") or "").strip()
+        filter_sql = ""
+        filter_params = []
+        if operator_filter.startswith("username:"):
+            operator_username = operator_filter.split(":", 1)[1].strip().lower()
+            if not operator_username:
+                raise ValueError("Select a valid Operator")
+            filter_sql += " AND LOWER(COALESCE(o.client_username, '')) = %s"
+            filter_params.append(operator_username)
+        elif operator_filter.startswith("id:"):
+            try:
+                operator_id = int(operator_filter.split(":", 1)[1])
+            except ValueError:
+                raise ValueError("Select a valid Operator")
+            filter_sql += " AND o.client_telegram_id = %s"
+            filter_params.append(operator_id)
+        elif operator_filter:
+            raise ValueError("Select a valid Operator")
+        if swapper_filter:
+            try:
+                swapper_id = int(swapper_filter)
+            except ValueError:
+                raise ValueError("Select a valid Swapper")
+            filter_sql += " AND o.master_telegram_id = %s"
+            filter_params.append(swapper_id)
+        if persona_filter:
+            if len(persona_filter) > 100:
+                raise ValueError("Select a valid Persona")
+            filter_sql += " AND o.profile_name = %s"
+            filter_params.append(persona_filter)
+
         conn = get_conn()
         cur = conn.cursor()
         try:
             cur.execute(
                 """
+                SELECT DISTINCT client_username, client_telegram_id
+                FROM orders
+                WHERE NULLIF(client_username, '') IS NOT NULL
+                   OR client_telegram_id IS NOT NULL
+                """
+            )
+            operator_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT DISTINCT master_telegram_id
+                FROM orders
+                WHERE master_telegram_id IS NOT NULL
+                ORDER BY master_telegram_id
+                """
+            )
+            swapper_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT DISTINCT profile_name
+                FROM orders
+                WHERE NULLIF(profile_name, '') IS NOT NULL
+                ORDER BY profile_name
+                """
+            )
+            persona_rows = cur.fetchall()
+            cur.execute(
+                f"""
                 SELECT o.id, o.client_username, o.client_telegram_id, o.contact_text,
                        o.profile_name, o.master_telegram_id, o.paid_amount,
                        COALESCE(gift_history.created_at, o.created_at) AS event_at
@@ -3646,13 +3707,14 @@ def monthly_leads_api():
                 WHERE UPPER(COALESCE(o.payment_status,'')) IN ('GIFT','PAID')
                   AND COALESCE(gift_history.created_at, o.created_at) >= %s
                   AND COALESCE(gift_history.created_at, o.created_at) < %s
+                  {filter_sql}
                 ORDER BY event_at DESC, o.id DESC
                 """,
-                (month_start, month_end),
+                (month_start, month_end, *filter_params),
             )
             gift_rows = cur.fetchall()
             cur.execute(
-                """
+                f"""
                 SELECT o.id, o.client_username, o.client_telegram_id, o.contact_text,
                        o.profile_name, o.master_telegram_id, o.dispute_comment,
                        COALESCE(o.dispute_opened_at, o.created_at) AS event_at
@@ -3660,19 +3722,21 @@ def monthly_leads_api():
                 WHERE (o.payment_status='DISPUTE' OR o.order_status='DISPUTE')
                   AND COALESCE(o.dispute_opened_at, o.created_at) >= %s
                   AND COALESCE(o.dispute_opened_at, o.created_at) < %s
+                  {filter_sql}
                 ORDER BY event_at DESC, o.id DESC
                 """,
-                (month_start, month_end),
+                (month_start, month_end, *filter_params),
             )
             dispute_rows = cur.fetchall()
             cur.execute(
-                """
-                SELECT created_at
-                FROM orders
-                WHERE created_at >= %s AND created_at < %s
-                ORDER BY created_at
+                f"""
+                SELECT o.created_at
+                FROM orders o
+                WHERE o.created_at >= %s AND o.created_at < %s
+                  {filter_sql}
+                ORDER BY o.created_at
                 """,
-                (month_start, month_end),
+                (month_start, month_end, *filter_params),
             )
             lead_created_rows = cur.fetchall()
         finally:
@@ -3681,6 +3745,27 @@ def monthly_leads_api():
 
         def operator_label(username, telegram_id):
             return f"@{username}" if username else str(telegram_id or "—")
+
+        operator_options_by_value = {}
+        for username, telegram_id in operator_rows:
+            if telegram_id is not None:
+                value = f"id:{telegram_id}"
+                label = f"@{username}" if username else str(telegram_id)
+            elif username:
+                value = f"username:{username.lower()}"
+                label = f"@{username}"
+            else:
+                continue
+            operator_options_by_value[value] = {"value": value, "label": label}
+        operator_options = sorted(
+            operator_options_by_value.values(), key=lambda item: item["label"].lower()
+        )
+        swapper_options = [
+            {"value": str(row[0]), "label": str(row[0])} for row in swapper_rows
+        ]
+        persona_options = [
+            {"value": row[0], "label": row[0]} for row in persona_rows
+        ]
 
         gifts = [
             {
@@ -3760,6 +3845,11 @@ def monthly_leads_api():
                 "best_hour_count": hour_counts[best_hour_number] if total_leads else 0,
             },
             daily=cycle_days,
+            filters={
+                "operators": operator_options,
+                "swappers": swapper_options,
+                "personas": persona_options,
+            },
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400
