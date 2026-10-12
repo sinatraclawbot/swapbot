@@ -3657,10 +3657,25 @@ def monthly_leads_api():
             filter_sql += " AND o.master_telegram_id = %s"
             filter_params.append(swapper_id)
         if persona_filter:
-            if len(persona_filter) > 100:
+            if persona_filter == "__unknown__":
+                filter_sql += """
+                    AND NOT EXISTS (
+                        SELECT 1 FROM personas p
+                        WHERE p.is_active = TRUE
+                          AND LOWER(p.name) = LOWER(COALESCE(o.profile_name, ''))
+                    )
+                """
+            elif len(persona_filter) > 100:
                 raise ValueError("Select a valid Persona")
-            filter_sql += " AND o.profile_name = %s"
-            filter_params.append(persona_filter)
+            else:
+                filter_sql += """
+                    AND LOWER(COALESCE(o.profile_name, '')) = LOWER(%s)
+                    AND EXISTS (
+                        SELECT 1 FROM personas p
+                        WHERE p.is_active = TRUE AND LOWER(p.name) = LOWER(%s)
+                    )
+                """
+                filter_params.extend((persona_filter, persona_filter))
 
         conn = get_conn()
         cur = conn.cursor()
@@ -3685,10 +3700,10 @@ def monthly_leads_api():
             swapper_rows = cur.fetchall()
             cur.execute(
                 """
-                SELECT DISTINCT profile_name
-                FROM orders
-                WHERE NULLIF(profile_name, '') IS NOT NULL
-                ORDER BY profile_name
+                SELECT name
+                FROM personas
+                WHERE is_active = TRUE
+                ORDER BY LOWER(name), id
                 """
             )
             persona_rows = cur.fetchall()
@@ -3766,11 +3781,16 @@ def monthly_leads_api():
         persona_options = [
             {"value": row[0], "label": row[0]} for row in persona_rows
         ]
+        persona_options.append({"value": "__unknown__", "label": "Unknown"})
+        active_personas_by_name = {row[0].lower(): row[0] for row in persona_rows}
+
+        def persona_label(profile_name):
+            return active_personas_by_name.get((profile_name or "").lower(), "Unknown")
 
         gifts = [
             {
                 "id": row[0], "operator": operator_label(row[1], row[2]),
-                "contact": row[3] or "—", "persona": row[4] or "—",
+                "contact": row[3] or "—", "persona": persona_label(row[4]),
                 "swapper": row[5] or "—", "gift": format_money(row[6] or 0),
                 "event_at": row[7].astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d %H:%M"),
             }
@@ -3779,7 +3799,7 @@ def monthly_leads_api():
         disputes = [
             {
                 "id": row[0], "operator": operator_label(row[1], row[2]),
-                "contact": row[3] or "—", "persona": row[4] or "—",
+                "contact": row[3] or "—", "persona": persona_label(row[4]),
                 "swapper": row[5] or "—", "reason": row[6] or "—",
                 "event_at": row[7].astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d %H:%M"),
             }
