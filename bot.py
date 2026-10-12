@@ -1539,7 +1539,7 @@ def admin_panel_keyboard(user_id):
     kb.add(InlineKeyboardButton("📋 CRM", callback_data="adm_crm"))
     kb.add(
         InlineKeyboardButton(
-            "📅 Gift & Dispute by Month",
+            "📅 Gift & Dispute by Cycle",
             web_app=WebAppInfo(
                 url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/monthly-leads?token="
                 f"{create_webapp_access_token(user_id)}"
@@ -3560,11 +3560,11 @@ def monthly_leads_page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Monthly Gift & Dispute</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>Cycle Gift & Dispute</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:var(--tg-theme-hint-color,#777);font-size:14px}.picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-radius:15px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}input,button{min-height:44px;border-radius:12px;font:inherit;font-size:16px}input{min-width:0;padding:7px 10px;border:1px solid var(--tg-theme-hint-color,#999);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}button{padding:8px 16px;border:0;font-weight:750;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}.error{min-height:18px;margin:7px 2px;color:#d63333;font-size:13px;font-weight:650}.summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 14px}.stat{padding:12px;border-radius:14px;text-align:center;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.stat strong{display:block;font-size:22px}.section{margin:14px 0 7px;font-size:19px}.lead{margin:7px 0;padding:11px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3);line-height:1.38;font-size:14px}.lead b{font-size:16px}.muted{color:var(--tg-theme-hint-color,#777)}.empty{padding:14px;text-align:center;color:var(--tg-theme-hint-color,#777)}
 </style></head><body>
-<h1>📅 Monthly leads</h1><p class="sub">Gift clients and Dispute leads</p>
+<h1>📅 Cycle leads</h1><p class="sub">Gift clients and Dispute leads · cycle 8 → 8</p>
 <div class="picker"><input id="month" type="month"><button id="load">Show</button></div>
 <div id="error" class="error"></div><div id="content"></div>
 <script>
@@ -3574,7 +3574,7 @@ function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&a
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
 function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
 function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('month',monthInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="summary"><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div></div><h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('month',monthInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Cycle: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div></div><h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
 document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
@@ -3587,15 +3587,17 @@ def monthly_leads_api():
             return jsonify(error="Admin access required"), 403
         month_value = (request.form.get("month") or "").strip()
         try:
-            month_start = datetime.strptime(month_value, "%Y-%m").replace(tzinfo=BOT_TIMEZONE)
+            month_start = datetime.strptime(month_value, "%Y-%m").replace(
+                day=8, tzinfo=BOT_TIMEZONE
+            )
         except ValueError:
             raise ValueError("Select a valid month")
         if month_start.year < 2020 or month_start.year > datetime.now(BOT_TIMEZONE).year + 1:
             raise ValueError("Selected month is outside the allowed range")
         if month_start.month == 12:
-            month_end = month_start.replace(year=month_start.year + 1, month=1)
+            month_end = month_start.replace(year=month_start.year + 1, month=1, day=8)
         else:
-            month_end = month_start.replace(month=month_start.month + 1)
+            month_end = month_start.replace(month=month_start.month + 1, day=8)
 
         conn = get_conn()
         cur = conn.cursor()
@@ -3662,6 +3664,10 @@ def monthly_leads_api():
         total_gift = sum((Decimal(row[6] or 0) for row in gift_rows), Decimal("0"))
         return jsonify(
             month=month_value,
+            cycle_label=(
+                f"{month_start.strftime('%Y-%m-%d')} → "
+                f"{month_end.strftime('%Y-%m-%d')}"
+            ),
             gifts=gifts,
             disputes=disputes,
             total_gift=format_money(total_gift),
