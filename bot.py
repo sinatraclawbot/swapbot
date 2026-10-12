@@ -3562,21 +3562,21 @@ def monthly_leads_page():
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Cycle Gift & Dispute</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:var(--tg-theme-hint-color,#777);font-size:14px}.picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px;border-radius:15px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}input,button{min-height:44px;border-radius:12px;font:inherit;font-size:16px}input{min-width:0;padding:7px 10px;border:1px solid var(--tg-theme-hint-color,#999);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}button{padding:8px 16px;border:0;font-weight:750;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}.error{min-height:18px;margin:7px 2px;color:#d63333;font-size:13px;font-weight:650}.summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 14px}.stat{padding:12px;border-radius:14px;text-align:center;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.stat strong{display:block;font-size:22px}.section{margin:14px 0 7px;font-size:19px}.lead{margin:7px 0;padding:11px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3);line-height:1.38;font-size:14px}.lead b{font-size:16px}.muted{color:var(--tg-theme-hint-color,#777)}.empty{padding:14px;text-align:center;color:var(--tg-theme-hint-color,#777)}.chart-wrap{overflow-x:auto;padding:10px 6px 6px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.chart{display:flex;align-items:flex-end;gap:5px;min-width:720px;height:180px;border-bottom:1px solid var(--tg-theme-hint-color,#999)}.day{display:flex;flex:1;min-width:18px;height:100%;flex-direction:column;justify-content:flex-end;align-items:center}.bar{width:100%;min-height:2px;border-radius:5px 5px 0 0;background:var(--tg-theme-button-color,#2481cc)}.day small{height:27px;padding-top:4px;font-size:9px;color:var(--tg-theme-hint-color,#777)}.chart-note{margin-top:7px;font-size:12px;color:var(--tg-theme-hint-color,#777)}
+:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:12px 12px calc(18px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:var(--tg-theme-hint-color,#777);font-size:14px}.picker{display:grid;grid-template-columns:1fr;gap:8px;padding:10px;border-radius:15px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}input,select,button{width:100%;min-width:0;min-height:44px;border-radius:12px;font:inherit;font-size:16px}input,select{padding:7px 10px;border:1px solid var(--tg-theme-hint-color,#999);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}button{padding:8px 16px;border:0;font-weight:750;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}.custom{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hidden{display:none}.error{min-height:18px;margin:7px 2px;color:#d63333;font-size:13px;font-weight:650}.summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 14px}.stat{padding:12px;border-radius:14px;text-align:center;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.stat strong{display:block;font-size:22px}.section{margin:14px 0 7px;font-size:19px}.lead{margin:7px 0;padding:11px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3);line-height:1.38;font-size:14px}.lead b{font-size:16px}.muted{color:var(--tg-theme-hint-color,#777)}.empty{padding:14px;text-align:center;color:var(--tg-theme-hint-color,#777)}.chart-wrap{overflow-x:auto;padding:10px 6px 6px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}.chart{display:flex;align-items:flex-end;gap:5px;min-width:720px;height:180px;border-bottom:1px solid var(--tg-theme-hint-color,#999)}.day{display:flex;flex:1;min-width:18px;height:100%;flex-direction:column;justify-content:flex-end;align-items:center}.bar{width:100%;min-height:2px;border-radius:5px 5px 0 0;background:var(--tg-theme-button-color,#2481cc)}.day small{height:27px;padding-top:4px;font-size:9px;color:var(--tg-theme-hint-color,#777)}.chart-note{margin-top:7px;font-size:12px;color:var(--tg-theme-hint-color,#777)}
 </style></head><body>
-<h1>📅 Cycle leads</h1><p class="sub">Gift clients and Dispute leads · cycle 8 → 8</p>
-<div class="picker"><input id="month" type="month"><button id="load">Show</button></div>
+<h1>📅 Leads report</h1><p class="sub">Choose an 8→8 cycle or any custom date range</p>
+<div class="picker"><select id="mode"><option value="cycle">Cycle 8 → 8</option><option value="custom">Custom dates</option></select><input id="month" type="month"><div id="custom" class="custom hidden"><input id="startDate" type="date" aria-label="Start date"><input id="endDate" type="date" aria-label="End date"></div><button id="load">Show</button></div>
 <div id="error" class="error"></div><div id="content"></div>
 <script>
-const tg=window.Telegram.WebApp;tg.ready();tg.expand();const accessToken=new URLSearchParams(location.search).get('token')||'',monthInput=document.getElementById('month'),error=document.getElementById('error'),content=document.getElementById('content');
-const now=new Date();monthInput.value=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+const tg=window.Telegram.WebApp;tg.ready();tg.expand();const accessToken=new URLSearchParams(location.search).get('token')||'',modeInput=document.getElementById('mode'),monthInput=document.getElementById('month'),customInput=document.getElementById('custom'),startInput=document.getElementById('startDate'),endInput=document.getElementById('endDate'),error=document.getElementById('error'),content=document.getElementById('content');
+const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;monthInput.value=today.slice(0,7);endInput.value=today;const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);startInput.value=`${weekAgo.getFullYear()}-${String(weekAgo.getMonth()+1).padStart(2,'0')}-${String(weekAgo.getDate()).padStart(2,'0')}`;
 function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
 function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
 function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
-function chart(days){const max=Math.max(1,...days.map(day=>day.leads));return `<div class="chart-wrap"><div class="chart">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.leads} leads, ${day.gifts} Gift, ${day.disputes} Dispute"><div class="bar" style="height:${Math.max(2,day.leads/max*140)}px"></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="chart-note">Bar = created Date leads · tap/hold a bar for Gift and Dispute details</div></div>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('month',monthInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Cycle: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div><div class="stat"><strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat"><strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat"><strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
-document.getElementById('load').addEventListener('click',load);load();
+function chart(days){const max=Math.max(1,...days.map(day=>day.leads)),width=Math.max(720,days.length*24);return `<div class="chart-wrap"><div class="chart" style="min-width:${width}px">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.leads} leads, ${day.gifts} Gift, ${day.disputes} Dispute"><div class="bar" style="height:${Math.max(2,day.leads/max*140)}px"></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="chart-note">Bar = created Date leads · tap/hold a bar for Gift and Dispute details</div></div>`}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);const data=await postForm('/api/monthly-leads',form);content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat"><strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat"><strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat"><strong>${data.disputes.length}</strong>Disputes</div><div class="stat"><strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat"><strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat"><strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+modeInput.addEventListener('change',()=>{const custom=modeInput.value==='custom';monthInput.classList.toggle('hidden',custom);customInput.classList.toggle('hidden',!custom)});document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
 
@@ -3586,19 +3586,46 @@ def monthly_leads_api():
         user_id, _ = verify_webapp_request(request.form)
         if not is_admin(user_id):
             return jsonify(error="Admin access required"), 403
+        mode = (request.form.get("mode") or "cycle").strip().lower()
         month_value = (request.form.get("month") or "").strip()
-        try:
-            month_start = datetime.strptime(month_value, "%Y-%m").replace(
-                day=8, tzinfo=BOT_TIMEZONE
+        if mode == "custom":
+            try:
+                month_start = datetime.strptime(
+                    (request.form.get("start_date") or "").strip(), "%Y-%m-%d"
+                ).replace(tzinfo=BOT_TIMEZONE)
+                selected_end = datetime.strptime(
+                    (request.form.get("end_date") or "").strip(), "%Y-%m-%d"
+                ).replace(tzinfo=BOT_TIMEZONE)
+            except ValueError:
+                raise ValueError("Select valid start and end dates")
+            if selected_end < month_start:
+                raise ValueError("End date cannot be before start date")
+            month_end = selected_end + timedelta(days=1)
+            if month_end - month_start > timedelta(days=366):
+                raise ValueError("Custom period cannot exceed 366 days")
+            period_label = (
+                f"{month_start.strftime('%Y-%m-%d')} → "
+                f"{selected_end.strftime('%Y-%m-%d')}"
             )
-        except ValueError:
-            raise ValueError("Select a valid month")
-        if month_start.year < 2020 or month_start.year > datetime.now(BOT_TIMEZONE).year + 1:
-            raise ValueError("Selected month is outside the allowed range")
-        if month_start.month == 12:
-            month_end = month_start.replace(year=month_start.year + 1, month=1, day=8)
+        elif mode == "cycle":
+            try:
+                month_start = datetime.strptime(month_value, "%Y-%m").replace(
+                    day=8, tzinfo=BOT_TIMEZONE
+                )
+            except ValueError:
+                raise ValueError("Select a valid month")
+            if month_start.month == 12:
+                month_end = month_start.replace(year=month_start.year + 1, month=1, day=8)
+            else:
+                month_end = month_start.replace(month=month_start.month + 1, day=8)
+            period_label = (
+                f"{month_start.strftime('%Y-%m-%d')} → "
+                f"{month_end.strftime('%Y-%m-%d')}"
+            )
         else:
-            month_end = month_start.replace(month=month_start.month + 1, day=8)
+            raise ValueError("Select a valid report mode")
+        if month_start.year < 2020 or month_start.year > datetime.now(BOT_TIMEZONE).year + 1:
+            raise ValueError("Selected period is outside the allowed range")
 
         conn = get_conn()
         cur = conn.cursor()
@@ -3719,10 +3746,7 @@ def monthly_leads_api():
             conversion = Decimal("0.00")
         return jsonify(
             month=month_value,
-            cycle_label=(
-                f"{month_start.strftime('%Y-%m-%d')} → "
-                f"{month_end.strftime('%Y-%m-%d')}"
-            ),
+            cycle_label=period_label,
             gifts=gifts,
             disputes=disputes,
             total_gift=format_money(total_gift),
