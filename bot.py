@@ -1534,7 +1534,6 @@ def admin_panel_keyboard(user_id):
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
         InlineKeyboardButton("TOP Gift leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
-        InlineKeyboardButton("Audit log", callback_data="adm_audit"),
     )
     kb.add(
         InlineKeyboardButton(
