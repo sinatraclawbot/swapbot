@@ -1530,7 +1530,7 @@ def admin_panel_keyboard(user_id):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
-        InlineKeyboardButton("🔄 Swappers", callback_data="adm_masters"),
+        InlineKeyboardButton("💼 Wallets", callback_data="adm_masters"),
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
         InlineKeyboardButton("TOP Gift leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
@@ -1742,7 +1742,7 @@ def show_admin_masters(call):
         cur.close()
         conn.close()
     if not rows:
-        bot.send_message(call.message.chat.id, "🔄 No Swappers found")
+        bot.send_message(call.message.chat.id, "💼 No Wallets found")
         bot.answer_callback_query(call.id)
         return
     kb = InlineKeyboardMarkup(row_width=1)
@@ -1754,7 +1754,7 @@ def show_admin_masters(call):
                 callback_data=f"adm_master_{master_id}",
             )
         )
-    bot.send_message(call.message.chat.id, "👥🔄 Swappers:", reply_markup=kb)
+    bot.send_message(call.message.chat.id, "💼 Wallets:", reply_markup=kb)
     bot.answer_callback_query(call.id)
 
 
