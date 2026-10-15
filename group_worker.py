@@ -609,15 +609,19 @@ async def create_group_async(order_id):
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         previous_values_label = ""
         if previous_values:
-            previous_value_lines = [
-                f"• #{previous_id} · {created_at.strftime('%Y-%m-%d')} · "
-                f"Initial Value: {initial_value or 0} USDT · "
-                f"Final Value: {paid_amount} USDT · Persona: {profile_name or 'Unknown'}"
+            previous_value_cards = [
+                f"📦 Date #{previous_id}\n"
+                f"📅 {created_at.strftime('%d %b %Y')}\n"
+                f"💃 Persona: {profile_name or 'Unknown'}\n"
+                f"🏷 Initial Value: {initial_value or 0} USDT\n"
+                f"✅ Final Value: {paid_amount} USDT"
                 for previous_id, initial_value, paid_amount, created_at, profile_name in previous_values
             ]
             previous_values_label = (
-                "\n\n👤 Mate Profile\n🎁 Previous confirmed Values:\n"
-                + "\n".join(previous_value_lines)
+                f"\n\n👤 MATE PROFILE\n"
+                f"Previous Value Dates: {len(previous_values)}\n"
+                "━━━━━━━━━━━━\n"
+                + "\n────────────\n".join(previous_value_cards)
             )
         payment_status_text = {
             "GIFT": "VALUE",
