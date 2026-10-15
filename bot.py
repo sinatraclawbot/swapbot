@@ -1617,7 +1617,17 @@ def get_balance(message):
                 f"🌐 Global cycle Value: {format_money(global_cycle_value)} / {limit_text}\n"
                 f"🚀 Started: {first_label}"
             )
-        bot.send_message(message.chat.id, "\n\n".join(sections))
+        wallet_keyboard = None
+        if creator_row and target_id == message.from_user.id:
+            wallet_keyboard = InlineKeyboardMarkup()
+            wallet_keyboard.add(
+                InlineKeyboardButton("💸 Withdrawal", callback_data="date_creator_withdrawal")
+            )
+        bot.send_message(
+            message.chat.id,
+            "\n\n".join(sections),
+            reply_markup=wallet_keyboard,
+        )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
         notify_admin(f"❌ BALANCE ERROR: {repr(e)}")
@@ -1626,26 +1636,36 @@ def get_balance(message):
 @bot.message_handler(commands=["withdraw"])
 @bot.message_handler(func=lambda message: message.text == "💸 Withdrawal")
 def start_date_creator_withdrawal(message):
+    send_date_creator_withdrawal_prompt(message.from_user.id, message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "date_creator_withdrawal")
+def start_date_creator_withdrawal_from_wallet(call):
+    send_date_creator_withdrawal_prompt(call.from_user.id, call.message.chat.id)
+    bot.answer_callback_query(call.id)
+
+
+def send_date_creator_withdrawal_prompt(user_id, chat_id):
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
             "SELECT available_balance FROM date_creator_wallets WHERE telegram_id=%s",
-            (message.from_user.id,),
+            (user_id,),
         )
         row = cur.fetchone()
     finally:
         cur.close()
         conn.close()
     if not row:
-        bot.send_message(message.chat.id, "Date Creator wallet not found yet.")
+        bot.send_message(chat_id, "Date Creator wallet not found yet.")
         return
     available = Decimal(row[0] or 0)
     if available <= 0:
-        bot.send_message(message.chat.id, "No available balance to withdraw.")
+        bot.send_message(chat_id, "No available balance to withdraw.")
         return
     msg = bot.send_message(
-        message.chat.id,
+        chat_id,
         f"💸 Available for withdrawal: {format_money(available)} USDT\n"
         "Enter the amount you want to withdraw:",
     )
