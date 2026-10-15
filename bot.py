@@ -4022,7 +4022,7 @@ def edit_persona_page():
 h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 10px;color:var(--tg-theme-hint-color,#777);font-size:14px}.card{padding:12px;border-radius:16px;background:var(--tg-theme-secondary-bg-color,#f3f3f3)}label{display:block;margin:10px 0 5px;font-size:14px;font-weight:700}label:first-child{margin-top:0}input,select{display:block;width:100%;min-width:0;min-height:44px;padding:8px 10px;border-radius:12px;border:1px solid var(--tg-theme-hint-color,#999);font:inherit;font-size:16px;color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff)}
 .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.hidden{display:none}.note{margin-top:5px;color:var(--tg-theme-hint-color,#777);font-size:11px}.error{min-height:18px;margin:7px 2px 0;color:#d63333;font-size:13px;font-weight:650}button{position:sticky;bottom:max(6px,env(safe-area-inset-bottom));width:100%;min-height:48px;margin-top:4px;border:0;border-radius:14px;font:inherit;font-size:17px;font-weight:800;color:var(--tg-theme-button-text-color,#fff);background:var(--tg-theme-button-color,#2481cc)}button:disabled{opacity:.55}
 </style></head><body>
-<h1>✏️ Edit Persona</h1><p class="sub">Choose a Persona and update its profile</p>
+<h1>✏️ Edit Persona</h1><p class="sub">Change any field; all other details stay the same</p>
 <div class="card">
 <label for="persona">Persona</label><select id="persona"><option value="">Loading…</option></select>
 <label for="name">Name</label><input id="name" maxlength="50">
@@ -4045,7 +4045,7 @@ function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new 
 async function loadPersonas(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);const result=await postForm('/api/personas/manage',form);personas=result.personas;personaInput.innerHTML='<option value="">Select Persona</option>';personas.forEach(item=>personaInput.add(new Option(item.name,String(item.id))))}catch(e){error.textContent=e.message}}
 async function decodePhoto(file){if(window.createImageBitmap){try{return await createImageBitmap(file)}catch(_){}}return await new Promise((resolve,reject)=>{const url=URL.createObjectURL(file),image=new Image();image.onload=()=>{URL.revokeObjectURL(url);resolve(image)};image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('This photo format cannot be opened. Choose another photo.'))};image.src=url})}
 async function compressPhoto(file){const image=await decodePhoto(file),width=image.width||image.naturalWidth,height=image.height||image.naturalHeight,scale=Math.min(1,1280/Math.max(width,height)),canvas=document.createElement('canvas');canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);if(image.close)image.close();const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.82));if(!blob)throw new Error('Could not process a photo');return blob}
-saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,attitude=attitudeInput.value==='Other'?attitudeCustomInput.value.trim():attitudeInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(!attitude){error.textContent='Select or enter Attitude.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('name',name);form.append('hair_color',hair);form.append('age',age);form.append('attitude',attitude);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');await postForm(`/api/personas/${id}`,form);saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
+saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,attitude=attitudeInput.value==='Other'?attitudeCustomInput.value.trim():attitudeInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('name',name);form.append('hair_color',hair);form.append('age',age);form.append('attitude',attitude);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');await postForm(`/api/personas/${id}`,form);saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
 loadPersonas();
 </script></body></html>""", 200, {
         "Content-Type": "text/html; charset=utf-8",
@@ -4093,18 +4093,22 @@ def update_persona_api(persona_id):
         user_id, telegram_user = verify_webapp_request(request.form)
         if not is_admin(user_id):
             return jsonify(error="Admin access required"), 403
-        name = " ".join((request.form.get("name") or "").split()).strip()
-        hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
-        attitude = " ".join((request.form.get("attitude") or "").split()).strip()
-        age = int(request.form.get("age", "0"))
-        if len(name) < 2 or len(name) > 50:
+        submitted_name = " ".join((request.form.get("name") or "").split()).strip()
+        submitted_hair = " ".join((request.form.get("hair_color") or "").split()).strip()
+        submitted_attitude = " ".join((request.form.get("attitude") or "").split()).strip()
+        submitted_age_text = (request.form.get("age") or "").strip()
+        submitted_age = int(submitted_age_text) if submitted_age_text else None
+        if submitted_name and not 2 <= len(submitted_name) <= 50:
             raise ValueError("Name must contain 2–50 characters")
-        if len(hair_color) < 2 or len(hair_color) > 30:
+        if submitted_hair and not 2 <= len(submitted_hair) <= 30:
             raise ValueError("Select a valid hair color")
-        if age < 18 or age > 99:
+        if submitted_age is not None and not 18 <= submitted_age <= 99:
             raise ValueError("Age must be between 18 and 99")
-        if attitude == "Other" or (
-            attitude not in PERSONA_ATTITUDES and not 2 <= len(attitude) <= 50
+        if submitted_attitude and (
+            submitted_attitude == "Other" or (
+                submitted_attitude not in PERSONA_ATTITUDES
+                and not 2 <= len(submitted_attitude) <= 50
+            )
         ):
             raise ValueError("Select a valid Attitude")
         uploaded_files = [item for item in request.files.getlist("photos") if item.filename]
@@ -4134,6 +4138,10 @@ def update_persona_api(persona_id):
                 conn.rollback()
                 return jsonify(error="Persona not found"), 404
             old_name, old_hair, old_age, old_attitude = existing
+            name = submitted_name or old_name
+            hair_color = submitted_hair or old_hair
+            age = submitted_age if submitted_age is not None else old_age
+            attitude = submitted_attitude or old_attitude
             if photos:
                 while len(photos) < 2:
                     photos.append((None, None))
