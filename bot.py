@@ -834,7 +834,6 @@ def main_menu(user_id=None):
         )
     )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
-    markup.add(KeyboardButton("💸 Withdrawal"))
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
         markup.add(KeyboardButton("Admin Panel"))
