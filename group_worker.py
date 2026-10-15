@@ -501,7 +501,8 @@ async def create_group_async(order_id):
                 payment_status,
                 order_status,
                 is_returning_client,
-                is_blacklisted_contact
+                is_blacklisted_contact,
+                normalized_contact_phone
             FROM orders
             WHERE id = %s
             """,
@@ -529,7 +530,25 @@ async def create_group_async(order_id):
             order_status,
             is_returning_client,
             is_blacklisted_contact,
+            normalized_contact_phone,
         ) = row
+
+        previous_values = []
+        if normalized_contact_phone:
+            cur.execute(
+                """
+                SELECT id, paid_amount, created_at
+                FROM orders
+                WHERE id <> %s
+                  AND normalized_contact_phone = %s
+                  AND UPPER(COALESCE(payment_status, '')) IN ('GIFT', 'PAID')
+                  AND paid_amount IS NOT NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20
+                """,
+                (order_id, normalized_contact_phone),
+            )
+            previous_values = cur.fetchall()
 
         cur.execute(
             """
@@ -588,6 +607,16 @@ async def create_group_async(order_id):
 
         returning_label = "\n🔁 Returning Client: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
+        previous_values_label = ""
+        if previous_values:
+            previous_value_lines = [
+                f"• #{previous_id} · {created_at.strftime('%Y-%m-%d')} · {paid_amount} USDT"
+                for previous_id, paid_amount, created_at in previous_values
+            ]
+            previous_values_label = (
+                "\n\n🎁 Previous confirmed Values for this Mate:\n"
+                + "\n".join(previous_value_lines)
+            )
         payment_status_text = {
             "GIFT": "VALUE",
             "PAID": "VALUE",
@@ -607,6 +636,7 @@ Order status: {order_status}
 Payment status: {payment_status_text}
 {returning_label}
 {blacklist_label}
+{previous_values_label}
 """
 
         await client(
