@@ -272,6 +272,20 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS date_creator_withdrawals (
+                id BIGSERIAL PRIMARY KEY,
+                creator_telegram_id BIGINT NOT NULL,
+                amount NUMERIC(14, 2) NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                reviewed_at TIMESTAMPTZ,
+                reviewed_by_telegram_id BIGINT,
+                reviewed_by_name TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS personas (
                 id BIGSERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -820,6 +834,7 @@ def main_menu(user_id=None):
         )
     )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
+    markup.add(KeyboardButton("💸 Withdrawal"))
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
         markup.add(KeyboardButton("Admin Panel"))
@@ -1541,6 +1556,11 @@ def get_balance(message):
                 COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0),
                 COALESCE(SUM(r.value_amount) FILTER (
                     WHERE r.cycle_start=%s AND r.cycle_end=%s
+                ), 0),
+                COALESCE((
+                    SELECT SUM(x.amount)
+                    FROM date_creator_withdrawals x
+                    WHERE x.creator_telegram_id=w.telegram_id AND x.status='PENDING'
                 ), 0)
             FROM date_creator_wallets w
             LEFT JOIN date_creator_rewards r ON r.creator_telegram_id=w.telegram_id
@@ -1578,7 +1598,10 @@ def get_balance(message):
                 f"📅 Value cycle: since {cycle_label}"
             )
         if creator_row:
-            available, first_confirmed, cycle_frozen, loyalty_frozen, creator_cycle_value = creator_row
+            (
+                available, first_confirmed, cycle_frozen, loyalty_frozen,
+                creator_cycle_value, pending_withdrawals,
+            ) = creator_row
             first_label = first_confirmed.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d")
             limit_text = (
                 f"{format_money(global_cycle_limit)} USDT"
@@ -1587,6 +1610,7 @@ def get_balance(message):
             sections.append(
                 f"📅 Date Creator\n"
                 f"✅ Available balance: {format_money(available)} USDT\n"
+                f"💸 Pending withdrawals: {format_money(pending_withdrawals)} USDT\n"
                 f"🧊 Frozen cycle bonus (1.5%): {format_money(cycle_frozen)} USDT\n"
                 f"⏳ Frozen 90-day reward (2%): {format_money(loyalty_frozen)} USDT\n"
                 f"🎁 Your cycle Value: {format_money(creator_cycle_value)} USDT\n"
@@ -1597,6 +1621,201 @@ def get_balance(message):
     except Exception as e:
         log("BALANCE ERROR", repr(e))
         notify_admin(f"❌ BALANCE ERROR: {repr(e)}")
+
+
+@bot.message_handler(commands=["withdraw"])
+@bot.message_handler(func=lambda message: message.text == "💸 Withdrawal")
+def start_date_creator_withdrawal(message):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT available_balance FROM date_creator_wallets WHERE telegram_id=%s",
+            (message.from_user.id,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        bot.send_message(message.chat.id, "Date Creator wallet not found yet.")
+        return
+    available = Decimal(row[0] or 0)
+    if available <= 0:
+        bot.send_message(message.chat.id, "No available balance to withdraw.")
+        return
+    msg = bot.send_message(
+        message.chat.id,
+        f"💸 Available for withdrawal: {format_money(available)} USDT\n"
+        "Enter the amount you want to withdraw:",
+    )
+    bot.register_next_step_handler(msg, submit_date_creator_withdrawal)
+
+
+def submit_date_creator_withdrawal(message):
+    try:
+        amount = Decimal(message.text.strip().replace(",", ".")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, AttributeError):
+        msg = bot.send_message(message.chat.id, "Enter a positive amount, for example 100")
+        bot.register_next_step_handler(msg, submit_date_creator_withdrawal)
+        return
+
+    creator_id = message.from_user.id
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE date_creator_wallets
+            SET available_balance=available_balance-%s, updated_at=NOW()
+            WHERE telegram_id=%s AND available_balance >= %s
+            RETURNING available_balance
+            """,
+            (amount, creator_id, amount),
+        )
+        balance_row = cur.fetchone()
+        if not balance_row:
+            conn.rollback()
+            bot.send_message(message.chat.id, "Not enough available balance.")
+            return
+        remaining_balance = balance_row[0]
+        cur.execute(
+            """
+            INSERT INTO date_creator_withdrawals (creator_telegram_id, amount)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (creator_id, amount),
+        )
+        withdrawal_id = cur.fetchone()[0]
+        add_audit(
+            cur, creator_id, actor_name(message.from_user),
+            "DATE_CREATOR_WITHDRAWAL_REQUESTED", "withdrawal", withdrawal_id,
+            None, amount,
+            f"reserved_from_available_balance; remaining={remaining_balance}",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ Approve", callback_data=f"dcwd_approve_{withdrawal_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"dcwd_reject_{withdrawal_id}"),
+    )
+    request_text = (
+        f"💸 Withdrawal request #{withdrawal_id}\n\n"
+        f"Date Creator: {actor_name(message.from_user)}\n"
+        f"Telegram ID: {creator_id}\n"
+        f"Amount: {format_money(amount)} USDT\n"
+        f"Remaining available balance: {format_money(remaining_balance)} USDT"
+    )
+    sent_to_admin = False
+    for admin_id in FULL_ADMIN_IDS:
+        try:
+            bot.send_message(admin_id, request_text, reply_markup=keyboard)
+            sent_to_admin = True
+        except Exception as e:
+            log("WITHDRAWAL ADMIN NOTIFY ERROR", withdrawal_id, admin_id, repr(e))
+    notify_admin(request_text)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Withdrawal request #{withdrawal_id} for {format_money(amount)} USDT sent to admins.\n"
+        f"The amount is reserved until a decision.{'' if sent_to_admin else ' Admin notification is pending.'}",
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("dcwd_approve_") or call.data.startswith("dcwd_reject_")
+)
+def review_date_creator_withdrawal(call):
+    if not require_admin_callback(call):
+        return
+    parts = call.data.split("_")
+    action = parts[1]
+    withdrawal_id = int(parts[2])
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT creator_telegram_id, amount, status
+            FROM date_creator_withdrawals
+            WHERE id=%s
+            FOR UPDATE
+            """,
+            (withdrawal_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Withdrawal request not found", show_alert=True)
+            return
+        creator_id, amount, status = row
+        if status != "PENDING":
+            conn.rollback()
+            bot.answer_callback_query(call.id, f"Already {status.lower()}", show_alert=True)
+            return
+        new_status = "APPROVED" if action == "approve" else "REJECTED"
+        if new_status == "REJECTED":
+            cur.execute(
+                """
+                UPDATE date_creator_wallets
+                SET available_balance=available_balance+%s, updated_at=NOW()
+                WHERE telegram_id=%s
+                """,
+                (amount, creator_id),
+            )
+        cur.execute(
+            """
+            UPDATE date_creator_withdrawals
+            SET status=%s, reviewed_at=NOW(), reviewed_by_telegram_id=%s,
+                reviewed_by_name=%s
+            WHERE id=%s
+            """,
+            (new_status, call.from_user.id, actor_name(call.from_user), withdrawal_id),
+        )
+        add_audit(
+            cur, call.from_user.id, actor_name(call.from_user),
+            f"DATE_CREATOR_WITHDRAWAL_{new_status}", "withdrawal", withdrawal_id,
+            "PENDING", new_status,
+            f"creator={creator_id}; amount={amount}; "
+            f"{'reserved amount kept for payout' if new_status == 'APPROVED' else 'reserved amount refunded'}",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    decision = "approved ✅" if new_status == "APPROVED" else "rejected ❌"
+    try:
+        bot.send_message(
+            creator_id,
+            f"💸 Withdrawal request #{withdrawal_id} for {format_money(amount)} USDT was {decision}."
+            + (" The reserved amount was returned to your Wallet." if new_status == "REJECTED" else ""),
+        )
+    except Exception as e:
+        log("WITHDRAWAL CREATOR NOTIFY ERROR", withdrawal_id, repr(e))
+    try:
+        bot.edit_message_text(
+            f"{call.message.text}\n\nDecision: {decision}\nAdmin: {actor_name(call.from_user)}",
+            call.message.chat.id,
+            call.message.message_id,
+        )
+    except Exception as e:
+        log("WITHDRAWAL ADMIN MESSAGE EDIT ERROR", withdrawal_id, repr(e))
+    bot.answer_callback_query(call.id, f"Withdrawal {new_status.lower()}")
 
 
 @bot.message_handler(commands=["setbalance"])
