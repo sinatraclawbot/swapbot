@@ -632,7 +632,7 @@ Mate: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}
 Persona: {profile_name}
-Master ID: {master_label}
+Swapper ID: {master_label}
 
 Order status: {order_status}
 Payment status: {payment_status_text}
