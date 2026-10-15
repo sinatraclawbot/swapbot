@@ -614,7 +614,7 @@ async def create_group_async(order_id):
                 for previous_id, paid_amount, created_at in previous_values
             ]
             previous_values_label = (
-                "\n\n🎁 Previous confirmed Values for this Mate:\n"
+                "\n\n👤 Mate Profile\n🎁 Previous confirmed Values:\n"
                 + "\n".join(previous_value_lines)
             )
         payment_status_text = {
