@@ -72,6 +72,10 @@ LOW_BALANCE_CHECK_INTERVAL_SECONDS = 300
 LEAD_FOLLOWUP_DELAY_HOURS = 8
 LEAD_FOLLOWUP_CHECK_INTERVAL_SECONDS = 300
 ARCHIVE_CHANNEL_CLEANUP_INTERVAL_SECONDS = 21600
+DATE_CREATOR_REWARD_CHECK_INTERVAL_SECONDS = 300
+DATE_CREATOR_IMMEDIATE_RATE = Decimal("0.03")
+DATE_CREATOR_CYCLE_RATE = Decimal("0.015")
+DATE_CREATOR_LOYALTY_RATE = Decimal("0.02")
 DB_POOL_MIN_CONNECTIONS = 1
 DB_POOL_MAX_CONNECTIONS = 12
 _db_pool = None
@@ -230,6 +234,40 @@ def ensure_balance_schema():
                 setting_value TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS date_creator_wallets (
+                telegram_id BIGINT PRIMARY KEY,
+                available_balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                first_confirmed_value_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS date_creator_rewards (
+                order_id BIGINT PRIMARY KEY,
+                creator_telegram_id BIGINT NOT NULL,
+                value_amount NUMERIC(14, 2) NOT NULL,
+                immediate_reward NUMERIC(14, 2) NOT NULL,
+                cycle_reward NUMERIC(14, 2) NOT NULL,
+                loyalty_reward NUMERIC(14, 2) NOT NULL,
+                cycle_start TIMESTAMPTZ NOT NULL,
+                cycle_end TIMESTAMPTZ NOT NULL,
+                cycle_status TEXT NOT NULL DEFAULT 'FROZEN',
+                loyalty_status TEXT NOT NULL DEFAULT 'FROZEN',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_date_creator_rewards_cycle
+            ON date_creator_rewards (cycle_end, cycle_status)
             """
         )
         cur.execute(
@@ -493,7 +531,7 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
         cur.execute(
             """
             SELECT paid_amount, commission_amount, master_telegram_id,
-                   payment_status, order_status
+                   payment_status, order_status, client_telegram_id
             FROM orders
             WHERE id = %s
             FOR UPDATE
@@ -504,7 +542,7 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
         if not order:
             raise ValueError("Date request not found")
 
-        old_amount, old_commission, master_id, payment_status, order_status = order
+        old_amount, old_commission, master_id, payment_status, order_status, creator_id = order
         if payment_status not in ("GIFT", "PAID"):
             raise ValueError("Value has not been recorded for this request")
         if master_id is None:
@@ -557,6 +595,9 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
             WHERE id = %s
             """,
             (new_amount, new_commission, new_balance, order_id),
+        )
+        adjust_date_creator_reward(
+            cur, order_id, new_amount, actor_id, actor_display
         )
         cur.execute(
             """
@@ -1108,6 +1149,278 @@ def wallet_cycle_start_sql():
     """
 
 
+def date_creator_cycle_bounds(moment=None):
+    local_now = (moment or datetime.now(BOT_TIMEZONE)).astimezone(BOT_TIMEZONE)
+    if local_now.day >= 8:
+        start_year, start_month = local_now.year, local_now.month
+    elif local_now.month == 1:
+        start_year, start_month = local_now.year - 1, 12
+    else:
+        start_year, start_month = local_now.year, local_now.month - 1
+    cycle_start = datetime(start_year, start_month, 8, tzinfo=BOT_TIMEZONE)
+    if start_month == 12:
+        cycle_end = datetime(start_year + 1, 1, 8, tzinfo=BOT_TIMEZONE)
+    else:
+        cycle_end = datetime(start_year, start_month + 1, 8, tzinfo=BOT_TIMEZONE)
+    return cycle_start, cycle_end
+
+
+def add_date_creator_reward(cur, order_id, creator_id, value_amount, actor=None):
+    if not creator_id:
+        return None
+    value_amount = Decimal(value_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    now = datetime.now(BOT_TIMEZONE)
+    cycle_start, cycle_end = date_creator_cycle_bounds(now)
+    immediate_reward = (value_amount * DATE_CREATOR_IMMEDIATE_RATE).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    cycle_reward = (value_amount * DATE_CREATOR_CYCLE_RATE).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    loyalty_reward = (value_amount * DATE_CREATOR_LOYALTY_RATE).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    cur.execute(
+        """
+        INSERT INTO date_creator_wallets (telegram_id, first_confirmed_value_at)
+        VALUES (%s, %s)
+        ON CONFLICT (telegram_id) DO NOTHING
+        """,
+        (creator_id, now),
+    )
+    cur.execute(
+        """
+        SELECT first_confirmed_value_at
+        FROM date_creator_wallets
+        WHERE telegram_id = %s
+        FOR UPDATE
+        """,
+        (creator_id,),
+    )
+    first_confirmed_at = cur.fetchone()[0] or now
+    loyalty_unlocked = now >= first_confirmed_at + timedelta(days=90)
+    loyalty_status = "UNLOCKED" if loyalty_unlocked else "FROZEN"
+    cur.execute(
+        """
+        INSERT INTO date_creator_rewards (
+            order_id, creator_telegram_id, value_amount,
+            immediate_reward, cycle_reward, loyalty_reward,
+            cycle_start, cycle_end, cycle_status, loyalty_status
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'FROZEN', %s)
+        ON CONFLICT (order_id) DO NOTHING
+        RETURNING order_id
+        """,
+        (
+            order_id, creator_id, value_amount, immediate_reward, cycle_reward,
+            loyalty_reward, cycle_start, cycle_end, loyalty_status,
+        ),
+    )
+    if not cur.fetchone():
+        return None
+    available_credit = immediate_reward + (loyalty_reward if loyalty_unlocked else Decimal("0"))
+    cur.execute(
+        """
+        UPDATE date_creator_wallets
+        SET available_balance = available_balance + %s, updated_at = NOW()
+        WHERE telegram_id = %s
+        RETURNING available_balance
+        """,
+        (available_credit, creator_id),
+    )
+    available_balance = cur.fetchone()[0]
+    add_audit(
+        cur,
+        getattr(actor, "id", None),
+        actor_name(actor),
+        "DATE_CREATOR_REWARD_CREATED",
+        "order",
+        order_id,
+        None,
+        available_credit,
+        f"creator={creator_id}; value={value_amount}; immediate={immediate_reward}; "
+        f"cycle_frozen={cycle_reward}; loyalty={loyalty_reward}; loyalty_status={loyalty_status}",
+    )
+    return {
+        "creator_id": creator_id,
+        "immediate_reward": immediate_reward,
+        "cycle_reward": cycle_reward,
+        "loyalty_reward": loyalty_reward,
+        "loyalty_status": loyalty_status,
+        "available_balance": available_balance,
+    }
+
+
+def adjust_date_creator_reward(cur, order_id, new_value_amount, actor_id, actor_display):
+    cur.execute(
+        """
+        SELECT creator_telegram_id, value_amount, immediate_reward, cycle_reward,
+               loyalty_reward, cycle_status, loyalty_status
+        FROM date_creator_rewards
+        WHERE order_id = %s
+        FOR UPDATE
+        """,
+        (order_id,),
+    )
+    reward = cur.fetchone()
+    if not reward:
+        return None
+    (
+        creator_id, old_value, old_immediate, old_cycle, old_loyalty,
+        cycle_status, loyalty_status,
+    ) = reward
+    new_value = Decimal(new_value_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    new_immediate = (new_value * DATE_CREATOR_IMMEDIATE_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    new_cycle = (new_value * DATE_CREATOR_CYCLE_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    new_loyalty = (new_value * DATE_CREATOR_LOYALTY_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    available_adjustment = new_immediate - Decimal(old_immediate)
+    if cycle_status == "EARNED":
+        available_adjustment += new_cycle - Decimal(old_cycle)
+    if loyalty_status == "UNLOCKED":
+        available_adjustment += new_loyalty - Decimal(old_loyalty)
+    cur.execute(
+        """
+        UPDATE date_creator_rewards
+        SET value_amount=%s, immediate_reward=%s, cycle_reward=%s,
+            loyalty_reward=%s, updated_at=NOW()
+        WHERE order_id=%s
+        """,
+        (new_value, new_immediate, new_cycle, new_loyalty, order_id),
+    )
+    cur.execute(
+        """
+        UPDATE date_creator_wallets
+        SET available_balance=available_balance + %s, updated_at=NOW()
+        WHERE telegram_id=%s
+        RETURNING available_balance
+        """,
+        (available_adjustment, creator_id),
+    )
+    new_balance = cur.fetchone()[0]
+    add_audit(
+        cur, actor_id, actor_display, "DATE_CREATOR_REWARD_CORRECTED", "order", order_id,
+        old_value, new_value,
+        f"creator={creator_id}; available_adjustment={available_adjustment}; balance={new_balance}",
+    )
+    return available_adjustment
+
+
+def process_date_creator_rewards_once():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='date_creator_cycle_limit_v1'"
+        )
+        setting = cur.fetchone()
+        cycle_limit = Decimal(setting[0]) if setting else Decimal("0")
+        cur.execute(
+            """
+            SELECT DISTINCT cycle_start, cycle_end
+            FROM date_creator_rewards
+            WHERE cycle_status='FROZEN' AND cycle_end <= NOW()
+            ORDER BY cycle_end
+            """
+        )
+        completed_cycles = cur.fetchall()
+        for cycle_start, cycle_end in completed_cycles:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(value_amount), 0)
+                FROM date_creator_rewards
+                WHERE cycle_start=%s AND cycle_end=%s
+                """,
+                (cycle_start, cycle_end),
+            )
+            cycle_value = Decimal(cur.fetchone()[0] or 0)
+            target_met = cycle_limit > 0 and cycle_value >= cycle_limit
+            if target_met:
+                cur.execute(
+                    """
+                    SELECT creator_telegram_id, SUM(cycle_reward)
+                    FROM date_creator_rewards
+                    WHERE cycle_start=%s AND cycle_end=%s AND cycle_status='FROZEN'
+                    GROUP BY creator_telegram_id
+                    """,
+                    (cycle_start, cycle_end),
+                )
+                for creator_id, reward_total in cur.fetchall():
+                    cur.execute(
+                        """
+                        UPDATE date_creator_wallets
+                        SET available_balance=available_balance + %s, updated_at=NOW()
+                        WHERE telegram_id=%s
+                        """,
+                        (reward_total, creator_id),
+                    )
+                cycle_status = "EARNED"
+            else:
+                cycle_status = "EXPIRED"
+            cur.execute(
+                """
+                UPDATE date_creator_rewards
+                SET cycle_status=%s, updated_at=NOW()
+                WHERE cycle_start=%s AND cycle_end=%s AND cycle_status='FROZEN'
+                """,
+                (cycle_status, cycle_start, cycle_end),
+            )
+            add_audit(
+                cur, None, "System", "DATE_CREATOR_CYCLE_CLOSED", "reward_cycle",
+                cycle_start.isoformat(), "FROZEN", cycle_status,
+                f"cycle_value={cycle_value}; global_limit={cycle_limit}",
+            )
+
+        cur.execute(
+            """
+            SELECT r.creator_telegram_id, SUM(r.loyalty_reward)
+            FROM date_creator_rewards r
+            JOIN date_creator_wallets w ON w.telegram_id=r.creator_telegram_id
+            WHERE r.loyalty_status='FROZEN'
+              AND w.first_confirmed_value_at + INTERVAL '90 days' <= NOW()
+            GROUP BY r.creator_telegram_id
+            """
+        )
+        loyalty_unlocks = cur.fetchall()
+        for creator_id, reward_total in loyalty_unlocks:
+            cur.execute(
+                """
+                UPDATE date_creator_wallets
+                SET available_balance=available_balance + %s, updated_at=NOW()
+                WHERE telegram_id=%s
+                """,
+                (reward_total, creator_id),
+            )
+            cur.execute(
+                """
+                UPDATE date_creator_rewards
+                SET loyalty_status='UNLOCKED', updated_at=NOW()
+                WHERE creator_telegram_id=%s AND loyalty_status='FROZEN'
+                """,
+                (creator_id,),
+            )
+            add_audit(
+                cur, None, "System", "DATE_CREATOR_LOYALTY_UNLOCKED",
+                "date_creator_wallet", creator_id, "FROZEN", reward_total,
+                "90 days completed",
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def date_creator_reward_worker():
+    while True:
+        try:
+            process_date_creator_rewards_once()
+        except Exception as e:
+            log("DATE CREATOR REWARD WORKER ERROR", repr(e))
+        time.sleep(DATE_CREATOR_REWARD_CHECK_INTERVAL_SECONDS)
+
+
 def master_statistics(master_id, period):
     condition, label = period_condition(period)
     conn = get_conn()
@@ -1217,29 +1530,70 @@ def get_balance(message):
             """,
             (target_id,),
         )
-        row = cur.fetchone()
+        swapper_row = cur.fetchone()
+        cycle_start_at, cycle_end_at = date_creator_cycle_bounds()
+        cur.execute(
+            """
+            SELECT
+                w.available_balance,
+                w.first_confirmed_value_at,
+                COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0),
+                COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0),
+                COALESCE(SUM(r.value_amount) FILTER (
+                    WHERE r.cycle_start=%s AND r.cycle_end=%s
+                ), 0)
+            FROM date_creator_wallets w
+            LEFT JOIN date_creator_rewards r ON r.creator_telegram_id=w.telegram_id
+            WHERE w.telegram_id=%s
+            GROUP BY w.telegram_id, w.available_balance, w.first_confirmed_value_at
+            """,
+            (cycle_start_at, cycle_end_at, target_id),
+        )
+        creator_row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT
+                COALESCE(SUM(value_amount), 0),
+                COALESCE((SELECT setting_value::NUMERIC FROM app_settings
+                          WHERE setting_key='date_creator_cycle_limit_v1'), 0)
+            FROM date_creator_rewards
+            WHERE cycle_start=%s AND cycle_end=%s
+            """,
+            (cycle_start_at, cycle_end_at),
+        )
+        global_cycle_value, global_cycle_limit = cur.fetchone()
         cur.close()
         conn.close()
 
-        if not row:
-            bot.send_message(message.chat.id, "🔄 Swapper account not found")
+        if not swapper_row and not creator_row:
+            bot.send_message(message.chat.id, "Wallet not found")
             return
-        balance, total_gift, cycle_started_at = row
-        cycle_label = cycle_started_at.astimezone(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d")
-        if target_id == message.from_user.id:
-            bot.send_message(
-                message.chat.id,
-                f"💼 Wallet\nBalance: {balance} USDT\n"
+        sections = [f"💼 Wallet{' · ' + str(target_id) if target_id != message.from_user.id else ''}"]
+        if swapper_row:
+            balance, total_gift, cycle_started_at = swapper_row
+            cycle_label = cycle_started_at.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d")
+            sections.append(
+                f"🔄 Swapper\nBalance: {balance} USDT\n"
                 f"🎁 Total Value: {total_gift} USDT\n"
-                f"📅 Value cycle: since {cycle_label}",
+                f"📅 Value cycle: since {cycle_label}"
             )
-        else:
-            bot.send_message(
-                message.chat.id,
-                f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n"
-                f"🎁 Total Value: {total_gift} USDT\n"
-                f"📅 Value cycle: since {cycle_label}",
+        if creator_row:
+            available, first_confirmed, cycle_frozen, loyalty_frozen, creator_cycle_value = creator_row
+            first_label = first_confirmed.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d")
+            limit_text = (
+                f"{format_money(global_cycle_limit)} USDT"
+                if Decimal(global_cycle_limit or 0) > 0 else "Not set"
             )
+            sections.append(
+                f"📅 Date Creator\n"
+                f"✅ Available balance: {format_money(available)} USDT\n"
+                f"🧊 Frozen cycle bonus (1.5%): {format_money(cycle_frozen)} USDT\n"
+                f"⏳ Frozen 90-day reward (2%): {format_money(loyalty_frozen)} USDT\n"
+                f"🎁 Your cycle Value: {format_money(creator_cycle_value)} USDT\n"
+                f"🌐 Global cycle Value: {format_money(global_cycle_value)} / {limit_text}\n"
+                f"🚀 Started: {first_label}"
+            )
+        bot.send_message(message.chat.id, "\n\n".join(sections))
     except Exception as e:
         log("BALANCE ERROR", repr(e))
         notify_admin(f"❌ BALANCE ERROR: {repr(e)}")
@@ -1587,6 +1941,7 @@ def admin_panel_keyboard(user_id):
     )
     kb.add(InlineKeyboardButton("✏️ Edit Value", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
+    kb.add(InlineKeyboardButton("🎯 Date Creator Limit", callback_data="adm_creator_limit"))
     return kb
 
 
@@ -1595,6 +1950,80 @@ def require_admin_callback(call):
         return True
     bot.answer_callback_query(call.id, "Access denied")
     return False
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_creator_limit")
+def start_date_creator_limit(call):
+    if not require_admin_callback(call):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='date_creator_cycle_limit_v1'"
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    current = f"{format_money(row[0])} USDT" if row and Decimal(row[0]) > 0 else "Not set"
+    msg = bot.send_message(
+        call.from_user.id,
+        f"🎯 Current global Date Creator cycle limit: {current}\n\n"
+        "Enter the new total Value limit in USDT:",
+    )
+    bot.register_next_step_handler(msg, save_date_creator_limit)
+    bot.answer_callback_query(call.id)
+
+
+def save_date_creator_limit(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    try:
+        amount = Decimal(message.text.strip().replace(",", ".")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, AttributeError):
+        msg = bot.send_message(message.chat.id, "Enter a positive limit, for example 50000")
+        bot.register_next_step_handler(msg, save_date_creator_limit)
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='date_creator_cycle_limit_v1'"
+        )
+        old_row = cur.fetchone()
+        old_value = old_row[0] if old_row else None
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES ('date_creator_cycle_limit_v1', %s)
+            ON CONFLICT (setting_key) DO UPDATE
+            SET setting_value=EXCLUDED.setting_value
+            """,
+            (str(amount),),
+        )
+        add_audit(
+            cur, message.from_user.id, actor_name(message.from_user),
+            "SET_DATE_CREATOR_CYCLE_LIMIT", "app_setting",
+            "date_creator_cycle_limit_v1", old_value, amount,
+            "Global Value target for the 1.5% Date Creator cycle reward",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+    bot.send_message(
+        message.chat.id,
+        f"✅ Global Date Creator limit set to {format_money(amount)} USDT for cycle 8→8.",
+    )
 
 
 @bot.message_handler(commands=["admin"])
@@ -2957,7 +3386,8 @@ def save_paid_amount(message, order_id, source_group_id):
     try:
         cur.execute(
             """
-            SELECT payment_status, master_telegram_id, tg_group_id, order_status
+            SELECT payment_status, master_telegram_id, tg_group_id, order_status,
+                   client_telegram_id
             FROM orders
             WHERE id = %s
             FOR UPDATE
@@ -2971,7 +3401,7 @@ def save_paid_amount(message, order_id, source_group_id):
             bot.send_message(master_id, "Request not found")
             return
 
-        payment_status, assigned_master_id, group_chat_id, order_status = row
+        payment_status, assigned_master_id, group_chat_id, order_status, creator_id = row
         if assigned_master_id != master_id:
             conn.rollback()
             bot.send_message(master_id, "You are not the assigned Swapper for this request")
@@ -3034,6 +3464,9 @@ def save_paid_amount(message, order_id, source_group_id):
             "master_balance", master_id, old_balance, master_balance,
             f"order_id={order_id}; commission={commission}",
         )
+        creator_reward = add_date_creator_reward(
+            cur, order_id, creator_id, paid_amount, message.from_user
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3060,6 +3493,18 @@ def save_paid_amount(message, order_id, source_group_id):
         master_id,
         f"Payment saved. Fee charged: {commission} USDT. Balance: {master_balance} USDT",
     )
+    if creator_reward:
+        try:
+            bot.send_message(
+                creator_id,
+                f"💼 Date Creator reward for Date #{order_id}\n"
+                f"✅ Available now (3%): {creator_reward['immediate_reward']} USDT\n"
+                f"🧊 Cycle bonus (1.5%): {creator_reward['cycle_reward']} USDT frozen\n"
+                f"⏳ 90-day reward (2%): {creator_reward['loyalty_reward']} USDT "
+                f"{'available' if creator_reward['loyalty_status'] == 'UNLOCKED' else 'frozen'}",
+            )
+        except Exception as e:
+            log("DATE CREATOR REWARD MESSAGE ERROR", order_id, repr(e))
     return_question_keyboard = InlineKeyboardMarkup(row_width=2)
     return_question_keyboard.add(
         InlineKeyboardButton("✅ Yes", callback_data=f"again_yes_{order_id}"),
@@ -4820,6 +5265,7 @@ except Exception as e:
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
+threading.Thread(target=date_creator_reward_worker, daemon=True).start()
 threading.Thread(target=lead_dispatch_worker, daemon=True).start()
 threading.Thread(target=group_creation_worker, daemon=True).start()
 threading.Thread(target=group_deletion_worker, daemon=True).start()
