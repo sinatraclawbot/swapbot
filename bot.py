@@ -27,8 +27,10 @@ from group_worker import (
     delete_order_group,
     ensure_dispute_channel,
     ensure_gift_channel,
+    ensure_withdrawal_channel,
     send_dispute_to_channel,
     send_gift_to_channel,
+    send_withdrawal_to_channel,
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -64,6 +66,7 @@ group_creation_pending_lock = threading.Lock()
 group_deletion_queue = queue.Queue()
 dispute_channel_queue = queue.Queue()
 gift_channel_queue = queue.Queue()
+withdrawal_channel_queue = queue.Queue()
 lead_dispatch_queue = queue.Queue()
 COMMISSION_RATE = Decimal("0.30")
 LOW_BALANCE_THRESHOLD = Decimal("500.00")
@@ -1744,6 +1747,7 @@ def submit_date_creator_withdrawal(message):
         except Exception as e:
             log("WITHDRAWAL ADMIN NOTIFY ERROR", withdrawal_id, admin_id, repr(e))
     notify_admin(request_text)
+    withdrawal_channel_queue.put((withdrawal_id, "REQUESTED"))
     bot.send_message(
         message.chat.id,
         f"✅ Withdrawal request #{withdrawal_id} for {format_money(amount)} USDT sent to admins.\n"
@@ -1817,6 +1821,7 @@ def review_date_creator_withdrawal(call):
         conn.close()
 
     decision = "approved ✅" if new_status == "APPROVED" else "rejected ❌"
+    withdrawal_channel_queue.put((withdrawal_id, new_status))
     try:
         bot.send_message(
             creator_id,
@@ -3394,6 +3399,40 @@ def gift_channel_worker():
             notify_admin(f"❌ Could not send Value #{order_id} to the Values channel")
         finally:
             gift_channel_queue.task_done()
+
+
+def withdrawal_channel_worker():
+    while True:
+        withdrawal_id, event = withdrawal_channel_queue.get()
+        try:
+            send_withdrawal_to_channel(withdrawal_id, event)
+            log("WITHDRAWAL SENT TO CHANNEL", withdrawal_id, event)
+        except Exception as e:
+            log("WITHDRAWAL CHANNEL SEND ERROR", withdrawal_id, event, repr(e))
+            notify_admin(
+                f"❌ Could not send Withdrawal #{withdrawal_id} ({event}) to the Withdrawals group"
+            )
+        finally:
+            withdrawal_channel_queue.task_done()
+
+
+def prepare_withdrawal_channel():
+    try:
+        invite_link, _, _, created = ensure_withdrawal_channel()
+        if created:
+            for admin_id in FULL_ADMIN_IDS:
+                try:
+                    bot.send_message(
+                        admin_id,
+                        "💸 SwapDate Withdrawals admin group created. "
+                        f"Open and join it here:\n{invite_link}",
+                    )
+                except Exception as e:
+                    log("WITHDRAWAL GROUP INVITE ERROR", admin_id, repr(e))
+        log("WITHDRAWAL GROUP READY", invite_link)
+    except Exception as e:
+        log("WITHDRAWAL GROUP SETUP ERROR", repr(e))
+        notify_admin(f"❌ Could not prepare the Withdrawals group: {repr(e)}")
 
 
 def prepare_gift_channel():
@@ -5510,6 +5549,8 @@ threading.Thread(target=dispute_channel_worker, daemon=True).start()
 threading.Thread(target=prepare_dispute_channel, daemon=True).start()
 threading.Thread(target=gift_channel_worker, daemon=True).start()
 threading.Thread(target=prepare_gift_channel, daemon=True).start()
+threading.Thread(target=withdrawal_channel_worker, daemon=True).start()
+threading.Thread(target=prepare_withdrawal_channel, daemon=True).start()
 threading.Thread(target=archive_channel_cleanup_worker, daemon=True).start()
 
 if __name__ == "__main__":

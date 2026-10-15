@@ -258,6 +258,168 @@ def send_gift_to_channel(order_id):
             loop.close()
 
 
+def withdrawal_message(row, event=None):
+    (
+        withdrawal_id,
+        creator_id,
+        amount,
+        status,
+        requested_at,
+        reviewed_at,
+        reviewed_by_name,
+    ) = row
+    requested_text = requested_at.strftime("%Y-%m-%d %H:%M") if requested_at else "—"
+    reviewed_text = reviewed_at.strftime("%Y-%m-%d %H:%M") if reviewed_at else "—"
+    event_title = {
+        "REQUESTED": "💸 NEW WITHDRAWAL REQUEST",
+        "PENDING": "💸 NEW WITHDRAWAL REQUEST",
+        "APPROVED": "✅ WITHDRAWAL APPROVED",
+        "REJECTED": "❌ WITHDRAWAL REJECTED",
+    }.get(event, "💸 WITHDRAWAL")
+    review_details = ""
+    if status != "PENDING":
+        review_details = (
+            f"\n👮 Reviewed by: {reviewed_by_name or '—'}"
+            f"\n🕒 Reviewed: {reviewed_text}"
+        )
+    return f"""{event_title} #{withdrawal_id}
+
+👤 Date Creator ID: {creator_id}
+💰 Amount: {amount} USDT
+📌 Status: {status}
+🕒 Requested: {requested_text}{review_details}"""
+
+
+async def ensure_withdrawal_channel_async():
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM app_settings
+            WHERE setting_key IN (
+                'withdrawal_channel_id_v1',
+                'withdrawal_channel_access_hash_v1',
+                'withdrawal_channel_invite_link_v1'
+            )
+            """
+        )
+        settings = dict(cur.fetchall())
+        channel_id = settings.get("withdrawal_channel_id_v1")
+        access_hash = settings.get("withdrawal_channel_access_hash_v1")
+        invite_link = settings.get("withdrawal_channel_invite_link_v1")
+
+        async with TelegramClient(
+            StringSession(TG_SESSION_STRING), TG_API_ID, TG_API_HASH
+        ) as client:
+            if channel_id and access_hash and invite_link:
+                return invite_link, int(channel_id), int(access_hash), False
+
+            result = await client(
+                CreateChannelRequest(
+                    title="💸 SwapDate Withdrawals",
+                    about="Private admin group for Date Creator withdrawal requests",
+                    broadcast=False,
+                    megagroup=True,
+                )
+            )
+            channel = result.chats[0]
+            invite = await client(ExportChatInviteRequest(channel))
+            invite_link = invite.link
+            cur.executemany(
+                """
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES (%s, %s)
+                ON CONFLICT (setting_key) DO UPDATE
+                SET setting_value=EXCLUDED.setting_value
+                """,
+                (
+                    ("withdrawal_channel_id_v1", str(channel.id)),
+                    ("withdrawal_channel_access_hash_v1", str(channel.access_hash)),
+                    ("withdrawal_channel_invite_link_v1", invite_link),
+                ),
+            )
+            conn.commit()
+            cur.execute(
+                """
+                SELECT id, creator_telegram_id, amount, status, requested_at,
+                       reviewed_at, reviewed_by_name
+                FROM date_creator_withdrawals
+                ORDER BY requested_at, id
+                """
+            )
+            for row in cur.fetchall():
+                await client(
+                    SendMessageRequest(
+                        peer=channel,
+                        message=withdrawal_message(row, row[3]),
+                    )
+                )
+            return invite_link, channel.id, channel.access_hash, True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_withdrawal_channel():
+    with archive_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(ensure_withdrawal_channel_async())
+        finally:
+            loop.close()
+
+
+async def send_withdrawal_to_channel_async(withdrawal_id, event):
+    _, channel_id, access_hash, created = await ensure_withdrawal_channel_async()
+    if created:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, creator_telegram_id, amount, status, requested_at,
+                   reviewed_at, reviewed_by_name
+            FROM date_creator_withdrawals
+            WHERE id=%s
+            """,
+            (withdrawal_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Withdrawal #{withdrawal_id} not found")
+    finally:
+        cur.close()
+        conn.close()
+    async with TelegramClient(
+        StringSession(TG_SESSION_STRING), TG_API_ID, TG_API_HASH
+    ) as client:
+        await client(
+            SendMessageRequest(
+                peer=InputChannel(channel_id, access_hash),
+                message=withdrawal_message(row, event),
+            )
+        )
+
+
+def send_withdrawal_to_channel(withdrawal_id, event):
+    with archive_channel_lock:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                send_withdrawal_to_channel_async(withdrawal_id, event)
+            )
+        finally:
+            loop.close()
+
+
 async def ensure_dispute_channel_async():
     conn = get_conn()
     cur = conn.cursor()
