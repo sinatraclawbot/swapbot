@@ -1343,9 +1343,27 @@ def process_date_creator_rewards_once():
         for cycle_start, cycle_end in completed_cycles:
             cur.execute(
                 """
-                SELECT COALESCE(SUM(value_amount), 0)
-                FROM date_creator_rewards
-                WHERE cycle_start=%s AND cycle_end=%s
+                SELECT COALESCE(SUM(o.paid_amount), 0)
+                FROM orders o
+                WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+                  AND COALESCE(
+                      (
+                          SELECT MIN(h.created_at)
+                          FROM order_status_history h
+                          WHERE h.order_id=o.id
+                            AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                      ),
+                      o.created_at
+                  ) >= %s
+                  AND COALESCE(
+                      (
+                          SELECT MIN(h.created_at)
+                          FROM order_status_history h
+                          WHERE h.order_id=o.id
+                            AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                      ),
+                      o.created_at
+                  ) < %s
                 """,
                 (cycle_start, cycle_end),
             )
@@ -1556,8 +1574,23 @@ def get_balance(message):
                 w.first_confirmed_value_at,
                 COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0),
                 COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0),
-                COALESCE(SUM(r.value_amount) FILTER (
-                    WHERE r.cycle_start=%s AND r.cycle_end=%s
+                COALESCE((
+                    SELECT SUM(o.paid_amount)
+                    FROM orders o
+                    WHERE o.client_telegram_id=w.telegram_id
+                      AND UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+                      AND COALESCE((
+                          SELECT MIN(h.created_at)
+                          FROM order_status_history h
+                          WHERE h.order_id=o.id
+                            AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                      ), o.created_at) >= %s
+                      AND COALESCE((
+                          SELECT MIN(h.created_at)
+                          FROM order_status_history h
+                          WHERE h.order_id=o.id
+                            AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                      ), o.created_at) < %s
                 ), 0),
                 COALESCE((
                     SELECT SUM(x.amount)
@@ -1575,11 +1608,23 @@ def get_balance(message):
         cur.execute(
             """
             SELECT
-                COALESCE(SUM(value_amount), 0),
+                COALESCE(SUM(o.paid_amount), 0),
                 COALESCE((SELECT setting_value::NUMERIC FROM app_settings
                           WHERE setting_key='date_creator_cycle_limit_v1'), 0)
-            FROM date_creator_rewards
-            WHERE cycle_start=%s AND cycle_end=%s
+            FROM orders o
+            WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+              AND COALESCE((
+                  SELECT MIN(h.created_at)
+                  FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) >= %s
+              AND COALESCE((
+                  SELECT MIN(h.created_at)
+                  FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) < %s
             """,
             (cycle_start_at, cycle_end_at),
         )
@@ -1604,12 +1649,17 @@ def get_balance(message):
                 creator_cycle_value, pending_withdrawals,
             ) = creator_row
             first_label = first_confirmed.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d")
+            creator_cycle_label = (
+                f"{cycle_start_at.astimezone(BOT_TIMEZONE).strftime('%d %b')} → "
+                f"{cycle_end_at.astimezone(BOT_TIMEZONE).strftime('%d %b')}"
+            )
             limit_text = (
                 f"{format_money(global_cycle_limit)} USDT"
                 if Decimal(global_cycle_limit or 0) > 0 else "Not set"
             )
             sections.append(
                 f"📅 Date Creator\n"
+                f"🗓 Cycle: {creator_cycle_label}\n"
                 f"✅ Available balance: {format_money(available)} USDT\n"
                 f"💸 Pending withdrawals: {format_money(pending_withdrawals)} USDT\n"
                 f"🧊 Frozen cycle bonus (1.5%): {format_money(cycle_frozen)} USDT\n"
