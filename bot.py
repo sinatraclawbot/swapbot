@@ -257,6 +257,12 @@ def ensure_balance_schema():
             ON personas ((LOWER(name)))
             """
         )
+        cur.execute(
+            """
+            ALTER TABLE personas
+            ADD COLUMN IF NOT EXISTS attitude TEXT
+            """
+        )
         for persona_name in PERSONA_OPTIONS.values():
             cur.execute(
                 """
@@ -913,6 +919,16 @@ PERSONA_OPTIONS = {
     "maya_b2b": "Maya Body2Body",
     "other": "Other",
     "personal": "Personal",
+}
+
+PERSONA_ATTITUDES = {
+    "Sassy",
+    "Cuddly",
+    "Dominant",
+    "Ice",
+    "Fatal goth",
+    "Innocent",
+    "Seductive",
 }
 
 
@@ -3926,6 +3942,8 @@ def create_persona_page():
           <option>Black</option><option>Brown</option><option>Red</option><option>Other</option></select></div>
       <div><label for="age">Age</label><select id="age"><option value="">Select</option></select></div>
     </div>
+    <label for="attitude">Attitude</label>
+    <select id="attitude"><option value="">Select</option><option value="Sassy">Sassy — дерзкая, с характером</option><option value="Cuddly">Cuddly — ласковая, любит обниматься</option><option value="Dominant">Dominant — доминантная, любит брать инициативу</option><option value="Ice">Ice — холодная, неприступная</option><option value="Fatal goth">Fatal goth — роковая готка</option><option value="Innocent">Innocent — невинная, наивная</option><option value="Seductive">Seductive — соблазнительная</option></select>
     <label for="photos">Content photos</label>
     <input id="photos" type="file" accept="image/*" multiple>
     <div class="note">Choose one or two photos. They will be compressed before upload.</div>
@@ -3937,7 +3955,7 @@ def create_persona_page():
     const tg=window.Telegram.WebApp; tg.ready(); tg.expand();
     const accessToken=new URLSearchParams(window.location.search).get('token')||'';
     const nameInput=document.getElementById('name'), hairInput=document.getElementById('hair');
-    const ageInput=document.getElementById('age'), photosInput=document.getElementById('photos');
+    const ageInput=document.getElementById('age'), attitudeInput=document.getElementById('attitude'), photosInput=document.getElementById('photos');
     const error=document.getElementById('error'), createButton=document.getElementById('create');
     for(let age=18;age<=70;age++) ageInput.add(new Option(String(age),String(age)));
     photosInput.addEventListener('change',()=>{
@@ -3966,16 +3984,17 @@ def create_persona_page():
       return blob;
     }
     createButton.addEventListener('click',async()=>{
-      error.textContent=''; const name=nameInput.value.trim(), hair=hairInput.value, age=ageInput.value;
+      error.textContent=''; const name=nameInput.value.trim(), hair=hairInput.value, age=ageInput.value, attitude=attitudeInput.value;
       const files=[...photosInput.files];
       if(name.length<2){error.textContent='Enter the Persona name.';return;}
       if(!hair){error.textContent='Select hair color.';return;}
       if(!age){error.textContent='Select age.';return;}
+      if(!attitude){error.textContent='Select Attitude.';return;}
       if(files.length<1||files.length>2){error.textContent='Choose one or two photos.';return;}
       createButton.disabled=true; createButton.textContent='Uploading…';
       try{
         const form=new FormData(); form.append('init_data',tg.initData); form.append('access_token',accessToken); form.append('name',name);
-        form.append('hair_color',hair); form.append('age',age);
+        form.append('hair_color',hair); form.append('age',age); form.append('attitude',attitude);
         for(const file of files) form.append('photos',await compressPhoto(file),'persona.jpg');
         await postForm('/api/personas',form);
         createButton.textContent='✅ Persona created'; setTimeout(()=>tg.close(),700);
@@ -4006,21 +4025,22 @@ h1{margin:0 0 4px;font-size:22px}.sub{margin:0 0 10px;color:var(--tg-theme-hint-
 <label for="name">Name</label><input id="name" maxlength="50">
 <div class="row"><div><label for="hair">Hair color</label><select id="hair"><option value="">Select</option><option>Blonde</option><option>Brunette</option><option>Black</option><option>Brown</option><option>Red</option><option>Other</option></select></div>
 <div><label for="age">Age</label><select id="age"><option value="">Select</option></select></div></div>
+<label for="attitude">Attitude</label><select id="attitude"><option value="">Select</option><option value="Sassy">Sassy — дерзкая, с характером</option><option value="Cuddly">Cuddly — ласковая, любит обниматься</option><option value="Dominant">Dominant — доминантная, любит брать инициативу</option><option value="Ice">Ice — холодная, неприступная</option><option value="Fatal goth">Fatal goth — роковая готка</option><option value="Innocent">Innocent — невинная, наивная</option><option value="Seductive">Seductive — соблазнительная</option></select>
 <label for="photos">Replace photos (optional)</label><input id="photos" type="file" accept="image/*" multiple>
 <div id="photoNote" class="note">Choose new photos only if you want to replace the existing ones.</div>
 </div><div id="error" class="error"></div><button id="save" type="button">💾 Save Persona</button>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();
 const accessToken=new URLSearchParams(window.location.search).get('token')||'';
-const personaInput=document.getElementById('persona'),nameInput=document.getElementById('name'),hairInput=document.getElementById('hair'),ageInput=document.getElementById('age'),photosInput=document.getElementById('photos'),photoNote=document.getElementById('photoNote'),error=document.getElementById('error'),saveButton=document.getElementById('save');
+const personaInput=document.getElementById('persona'),nameInput=document.getElementById('name'),hairInput=document.getElementById('hair'),ageInput=document.getElementById('age'),attitudeInput=document.getElementById('attitude'),photosInput=document.getElementById('photos'),photoNote=document.getElementById('photoNote'),error=document.getElementById('error'),saveButton=document.getElementById('save');
 let personas=[];for(let age=18;age<=70;age++)ageInput.add(new Option(String(age),String(age)));
-function showPersona(){const item=personas.find(p=>String(p.id)===personaInput.value);if(!item)return;nameInput.value=item.name;hairInput.value=item.hair_color||'';ageInput.value=item.age||'';photoNote.textContent=`Existing photos: ${item.photo_count}. Choose new photos only to replace them.`;photosInput.value='';}
+function showPersona(){const item=personas.find(p=>String(p.id)===personaInput.value);if(!item)return;nameInput.value=item.name;hairInput.value=item.hair_color||'';ageInput.value=item.age||'';attitudeInput.value=item.attitude||'';photoNote.textContent=`Existing photos: ${item.photo_count}. Choose new photos only to replace them.`;photosInput.value='';}
 personaInput.addEventListener('change',showPersona);
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Please reopen the Mini App and try again.'));xhr.send(form)})}
 async function loadPersonas(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);const result=await postForm('/api/personas/manage',form);personas=result.personas;personaInput.innerHTML='<option value="">Select Persona</option>';personas.forEach(item=>personaInput.add(new Option(item.name,String(item.id))))}catch(e){error.textContent=e.message}}
 async function decodePhoto(file){if(window.createImageBitmap){try{return await createImageBitmap(file)}catch(_){}}return await new Promise((resolve,reject)=>{const url=URL.createObjectURL(file),image=new Image();image.onload=()=>{URL.revokeObjectURL(url);resolve(image)};image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('This photo format cannot be opened. Choose another photo.'))};image.src=url})}
 async function compressPhoto(file){const image=await decodePhoto(file),width=image.width||image.naturalWidth,height=image.height||image.naturalHeight,scale=Math.min(1,1280/Math.max(width,height)),canvas=document.createElement('canvas');canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);if(image.close)image.close();const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.82));if(!blob)throw new Error('Could not process a photo');return blob}
-saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('name',name);form.append('hair_color',hair);form.append('age',age);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');await postForm(`/api/personas/${id}`,form);saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
+saveButton.addEventListener('click',async()=>{error.textContent='';const id=personaInput.value,name=nameInput.value.trim(),hair=hairInput.value,age=ageInput.value,attitude=attitudeInput.value,files=[...photosInput.files];if(!id){error.textContent='Select a Persona.';return}if(name.length<2){error.textContent='Enter the Persona name.';return}if(!hair){error.textContent='Select hair color.';return}if(!age){error.textContent='Select age.';return}if(!attitude){error.textContent='Select Attitude.';return}if(files.length>2){error.textContent='Maximum two photos.';return}saveButton.disabled=true;saveButton.textContent='Saving…';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('name',name);form.append('hair_color',hair);form.append('age',age);form.append('attitude',attitude);for(const file of files)form.append('photos',await compressPhoto(file),'persona.jpg');await postForm(`/api/personas/${id}`,form);saveButton.textContent='✅ Persona updated';setTimeout(()=>tg.close(),700)}catch(e){error.textContent=e.message;saveButton.disabled=false;saveButton.textContent='💾 Save Persona'}});
 loadPersonas();
 </script></body></html>""", 200, {
         "Content-Type": "text/html; charset=utf-8",
@@ -4039,7 +4059,7 @@ def manage_personas_api():
         try:
             cur.execute(
                 """
-                SELECT id, name, hair_color, age,
+                SELECT id, name, hair_color, age, attitude,
                        (CASE WHEN photo_1 IS NULL THEN 0 ELSE 1 END +
                         CASE WHEN photo_2 IS NULL THEN 0 ELSE 1 END) AS photo_count
                 FROM personas
@@ -4048,7 +4068,7 @@ def manage_personas_api():
                 """
             )
             personas = [
-                {"id": row[0], "name": row[1], "hair_color": row[2], "age": row[3], "photo_count": row[4]}
+                {"id": row[0], "name": row[1], "hair_color": row[2], "age": row[3], "attitude": row[4], "photo_count": row[5]}
                 for row in cur.fetchall()
             ]
         finally:
@@ -4070,6 +4090,7 @@ def update_persona_api(persona_id):
             return jsonify(error="Admin access required"), 403
         name = " ".join((request.form.get("name") or "").split()).strip()
         hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
+        attitude = " ".join((request.form.get("attitude") or "").split()).strip()
         age = int(request.form.get("age", "0"))
         if len(name) < 2 or len(name) > 50:
             raise ValueError("Name must contain 2–50 characters")
@@ -4077,6 +4098,8 @@ def update_persona_api(persona_id):
             raise ValueError("Select a valid hair color")
         if age < 18 or age > 99:
             raise ValueError("Age must be between 18 and 99")
+        if attitude not in PERSONA_ATTITUDES:
+            raise ValueError("Select a valid Attitude")
         uploaded_files = [item for item in request.files.getlist("photos") if item.filename]
         if len(uploaded_files) > 2:
             raise ValueError("Maximum two photos")
@@ -4098,29 +4121,29 @@ def update_persona_api(persona_id):
         conn = get_conn()
         cur = conn.cursor()
         try:
-            cur.execute("SELECT name, hair_color, age FROM personas WHERE id = %s FOR UPDATE", (persona_id,))
+            cur.execute("SELECT name, hair_color, age, attitude FROM personas WHERE id = %s FOR UPDATE", (persona_id,))
             existing = cur.fetchone()
             if not existing:
                 conn.rollback()
                 return jsonify(error="Persona not found"), 404
-            old_name, old_hair, old_age = existing
+            old_name, old_hair, old_age, old_attitude = existing
             if photos:
                 while len(photos) < 2:
                     photos.append((None, None))
                 cur.execute(
                     """
                     UPDATE personas
-                    SET name=%s, hair_color=%s, age=%s,
+                    SET name=%s, hair_color=%s, age=%s, attitude=%s,
                         photo_1=%s, photo_1_mime=%s, photo_2=%s, photo_2_mime=%s,
                         updated_at=NOW()
                     WHERE id=%s
                     """,
-                    (name, hair_color, age, photos[0][0], photos[0][1], photos[1][0], photos[1][1], persona_id),
+                    (name, hair_color, age, attitude, photos[0][0], photos[0][1], photos[1][0], photos[1][1], persona_id),
                 )
             else:
                 cur.execute(
-                    "UPDATE personas SET name=%s, hair_color=%s, age=%s, updated_at=NOW() WHERE id=%s",
-                    (name, hair_color, age, persona_id),
+                    "UPDATE personas SET name=%s, hair_color=%s, age=%s, attitude=%s, updated_at=NOW() WHERE id=%s",
+                    (name, hair_color, age, attitude, persona_id),
                 )
             if old_name.casefold() != name.casefold():
                 cur.execute("UPDATE orders SET profile_name=%s WHERE LOWER(profile_name)=LOWER(%s)", (name, old_name))
@@ -4128,8 +4151,8 @@ def update_persona_api(persona_id):
                 cur, user_id,
                 f"@{telegram_user.get('username')}" if telegram_user.get("username") else str(user_id),
                 "EDIT_PERSONA", "persona", persona_id,
-                f"name={old_name}; hair={old_hair}; age={old_age}",
-                f"name={name}; hair={hair_color}; age={age}",
+                f"name={old_name}; hair={old_hair}; age={old_age}; attitude={old_attitude}",
+                f"name={name}; hair={hair_color}; age={age}; attitude={attitude}",
                 f"photos_replaced={bool(photos)}",
             )
             conn.commit()
@@ -4157,6 +4180,7 @@ def create_persona_api():
         user_id, telegram_user = verify_webapp_request(request.form)
         name = " ".join((request.form.get("name") or "").split()).strip()
         hair_color = " ".join((request.form.get("hair_color") or "").split()).strip()
+        attitude = " ".join((request.form.get("attitude") or "").split()).strip()
         age = int(request.form.get("age", "0"))
         if len(name) < 2 or len(name) > 50:
             raise ValueError("Name must contain 2–50 characters")
@@ -4164,6 +4188,8 @@ def create_persona_api():
             raise ValueError("Select a valid hair color")
         if age < 18 or age > 99:
             raise ValueError("Age must be between 18 and 99")
+        if attitude not in PERSONA_ATTITUDES:
+            raise ValueError("Select a valid Attitude")
         uploaded_files = [item for item in request.files.getlist("photos") if item.filename]
         if len(uploaded_files) not in (1, 2):
             raise ValueError("Choose one or two photos")
@@ -4190,14 +4216,14 @@ def create_persona_api():
             cur.execute(
                 """
                 INSERT INTO personas (
-                    name, hair_color, age,
+                    name, hair_color, age, attitude,
                     photo_1, photo_1_mime, photo_2, photo_2_mime,
                     created_by_telegram_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
-                    name, hair_color, age,
+                    name, hair_color, age, attitude,
                     photos[0][0], photos[0][1], photos[1][0], photos[1][1],
                     user_id,
                 ),
@@ -4207,7 +4233,7 @@ def create_persona_api():
                 cur, user_id,
                 f"@{telegram_user.get('username')}" if telegram_user.get("username") else str(user_id),
                 "CREATE_PERSONA", "persona", persona_id, None, name,
-                f"hair_color={hair_color}; age={age}; photos={len(uploaded_files)}",
+                f"hair_color={hair_color}; age={age}; attitude={attitude}; photos={len(uploaded_files)}",
             )
             conn.commit()
         except psycopg2.IntegrityError:

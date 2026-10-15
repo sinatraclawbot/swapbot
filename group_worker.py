@@ -533,7 +533,7 @@ async def create_group_async(order_id):
 
         cur.execute(
             """
-            SELECT name, hair_color, age,
+            SELECT name, hair_color, age, attitude,
                    photo_1, photo_1_mime, photo_2, photo_2_mime
             FROM personas
             WHERE is_active = TRUE AND LOWER(name) = LOWER(%s)
@@ -616,6 +616,7 @@ Payment status: {payment_status}
                 persona_name,
                 hair_color,
                 persona_age,
+                persona_attitude,
                 photo_1,
                 photo_1_mime,
                 photo_2,
@@ -625,7 +626,8 @@ Payment status: {payment_status}
                 f"💃 Persona profile\n\n"
                 f"Name: {persona_name}\n"
                 f"Hair color: {hair_color or '—'}\n"
-                f"Age: {persona_age or '—'}"
+                f"Age: {persona_age or '—'}\n"
+                f"Attitude: {persona_attitude or '—'}"
             )
             media_files = []
             for index, (photo, mime) in enumerate(
@@ -648,7 +650,7 @@ Payment status: {payment_status}
                     caption=persona_caption,
                     force_document=False,
                 )
-            elif hair_color or persona_age:
+            elif hair_color or persona_age or persona_attitude:
                 await client(
                     SendMessageRequest(peer=channel, message=persona_caption)
                 )
