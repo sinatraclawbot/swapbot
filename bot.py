@@ -485,7 +485,7 @@ def add_status_history(cur, order_id, old_status, new_status, payment_status, us
 def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="System"):
     new_amount = Decimal(new_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if new_amount <= 0:
-        raise ValueError("Gift amount must be greater than zero")
+        raise ValueError("Value amount must be greater than zero")
 
     conn = get_conn()
     cur = conn.cursor()
@@ -506,7 +506,7 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
 
         old_amount, old_commission, master_id, payment_status, order_status = order
         if payment_status not in ("GIFT", "PAID"):
-            raise ValueError("Gift has not been recorded for this request")
+            raise ValueError("Value has not been recorded for this request")
         if master_id is None:
             raise ValueError("No Swapper is assigned to this request")
 
@@ -596,7 +596,7 @@ def correct_gift_amount(order_id, new_amount, actor_id=None, actor_display="Syst
 
 
 def apply_order_904_duplicate_charge_fix():
-    """Refund the duplicate 3000/1000 Gift charge once after #904 is normalized to 1500."""
+    """Refund the duplicate 3000/1000 Value charge once after #904 is normalized to 1500."""
     correction_key = "order_904_duplicate_charge_refund_v1"
     refund = Decimal("900.00")
     conn = get_conn()
@@ -626,7 +626,7 @@ def apply_order_904_duplicate_charge_fix():
             or Decimal(gift_amount or 0) != Decimal("1500.00")
             or Decimal(commission or 0) != Decimal("450.00")
         ):
-            raise ValueError("Date request #904 is not normalized to Gift 1500 / fee 450")
+            raise ValueError("Date request #904 is not normalized to Value 1500 / fee 450")
 
         cur.execute(
             "SELECT balance FROM masters WHERE telegram_id = %s FOR UPDATE",
@@ -655,7 +655,7 @@ def apply_order_904_duplicate_charge_fix():
             master_id,
             old_balance,
             new_balance,
-            "order_id=904; refund=900.00; duplicate Gift entries were 3000 and 1000",
+            "order_id=904; refund=900.00; duplicate Value entries were 3000 and 1000",
         )
         cur.execute(
             """
@@ -791,7 +791,7 @@ def send_main_menu(chat_id: int, text: str):
 
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎁 Gift", callback_data=f"gift_{order_id}"))
+    kb.add(InlineKeyboardButton("🎁 Value", callback_data=f"gift_{order_id}"))
     kb.add(InlineKeyboardButton("⚠️ Dispute", callback_data=f"dispute_{order_id}"))
     return kb
 
@@ -819,10 +819,15 @@ def build_group_status_text(
     commission=None,
     master_balance=None,
 ):
+    payment_status_text = {
+        "GIFT": "VALUE",
+        "PAID": "VALUE",
+        "NO_GIFT": "NO_VALUE",
+    }.get(payment_status, payment_status)
     payment_details = ""
     if paid_amount is not None:
         payment_details = f"""
-🎁 Total Gift: {paid_amount} USDT
+🎁 Total Value: {paid_amount} USDT
 🔄 Swapper fee (30%): {commission} USDT
 💼 Swapper balance: {master_balance} USDT
 """
@@ -830,7 +835,7 @@ def build_group_status_text(
     return f"""📦 Date Request #{order_id}
 
 Order status: {order_status}
-Payment status: {payment_status}
+Payment status: {payment_status_text}
 {payment_details}
 
 Use buttons below:"""
@@ -1151,7 +1156,7 @@ def master_statistics_text(master_id, period):
     return f"""📊 Swapper statistics — {label}
 
 Accepted Date: {stats['accepted']}
-🎁 Gift leads: {stats['paid_leads']}
+🎁 Value leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -1225,15 +1230,15 @@ def get_balance(message):
             bot.send_message(
                 message.chat.id,
                 f"💼 Wallet\nBalance: {balance} USDT\n"
-                f"🎁 Total Gift: {total_gift} USDT\n"
-                f"📅 Gift cycle: since {cycle_label}",
+                f"🎁 Total Value: {total_gift} USDT\n"
+                f"📅 Value cycle: since {cycle_label}",
             )
         else:
             bot.send_message(
                 message.chat.id,
                 f"🔄 Swapper {target_id}\n💼 Balance: {balance} USDT\n"
-                f"🎁 Total Gift: {total_gift} USDT\n"
-                f"📅 Gift cycle: since {cycle_label}",
+                f"🎁 Total Value: {total_gift} USDT\n"
+                f"📅 Value cycle: since {cycle_label}",
             )
     except Exception as e:
         log("BALANCE ERROR", repr(e))
@@ -1443,9 +1448,14 @@ def lead_card(order_id, viewer_id, admin_access=False):
     history_lines = []
     for old_status, new_status, hist_payment, hist_actor, changed_at in history:
         transition = f"{old_status or '—'} → {new_status}"
+        hist_payment_text = {
+            "GIFT": "VALUE",
+            "PAID": "VALUE",
+            "NO_GIFT": "NO_VALUE",
+        }.get(hist_payment, hist_payment or "—")
         history_lines.append(
             f"{changed_at.strftime('%Y-%m-%d %H:%M')} — {transition}"
-            f" ({hist_payment or '—'}, {hist_actor or 'System'})"
+            f" ({hist_payment_text}, {hist_actor or 'System'})"
         )
     history_text = "\n".join(history_lines) if history_lines else "No history"
     dispute_details = ""
@@ -1468,6 +1478,11 @@ def lead_card(order_id, viewer_id, admin_access=False):
         if paid_amount is not None
         else "—"
     )
+    payment_status_text = {
+        "GIFT": "VALUE",
+        "PAID": "VALUE",
+        "NO_GIFT": "NO_VALUE",
+    }.get(payment_status, payment_status or "—")
 
     return f"""📋 Lead #{lead_id}
 
@@ -1475,9 +1490,9 @@ Persona: {client_name}
 Operator: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
-Payment: {payment_status or '—'}
+Payment: {payment_status_text}
 Requested Value: {format_money(price)} USDT
-Final amount: {final_amount_text}
+Final Value: {final_amount_text}
 Difference: {difference_text}
 Expected Date to return: {return_prediction}
 Meeting: {meeting}
@@ -1548,7 +1563,7 @@ def admin_panel_keyboard(user_id):
         InlineKeyboardButton("System statistics", callback_data="adm_stats"),
         InlineKeyboardButton("💼 Wallets", callback_data="adm_masters"),
         InlineKeyboardButton("TOP revenue", callback_data="adm_top_rev"),
-        InlineKeyboardButton("TOP Gift leads", callback_data="adm_top_date"),
+        InlineKeyboardButton("TOP Value leads", callback_data="adm_top_date"),
         InlineKeyboardButton("TOP conversion", callback_data="adm_top_conv"),
     )
     kb.add(
@@ -1570,7 +1585,7 @@ def admin_panel_keyboard(user_id):
             ),
         )
     )
-    kb.add(InlineKeyboardButton("✏️ Edit Gift", callback_data="adm_edit_gift"))
+    kb.add(InlineKeyboardButton("✏️ Edit Value", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     return kb
 
@@ -1726,12 +1741,12 @@ def show_admin_persona_revenue(call):
 
     lines = ["💃 Revenue by Persona — current cycle from the 8th"]
     if not rows:
-        lines.append("No Gift leads in this cycle")
+        lines.append("No Value leads in this cycle")
     else:
         for index, (persona, gift_leads, revenue, average_check) in enumerate(rows, start=1):
             lines.append(
                 f"{index}. {persona} — {format_money(revenue)} USDT, "
-                f"{gift_leads} Gift leads, avg {format_money(average_check)} USDT"
+                f"{gift_leads} Value leads, avg {format_money(average_check)} USDT"
             )
     bot.send_message(call.message.chat.id, "\n".join(lines))
     bot.answer_callback_query(call.id)
@@ -1786,7 +1801,7 @@ def show_admin_master_card(call):
     text = f"""🔄👤 Swapper {master_id}
 
 Accepted Date: {stats['accepted']}
-🎁 Gift leads: {stats['paid_leads']}
+🎁 Value leads: {stats['paid_leads']}
 Conversion: {stats['conversion']}%
 Revenue: {format_money(stats['revenue'])} USDT
 Average check: {format_money(stats['average'])} USDT
@@ -1883,14 +1898,14 @@ def show_admin_top(call):
     finally:
         cur.close()
         conn.close()
-    titles = {"rev": "revenue", "date": "Gift leads", "conv": "conversion"}
+    titles = {"rev": "revenue", "date": "Value leads", "conv": "conversion"}
     lines = [
         f"🏆🔄 TOP Swappers by {titles.get(ranking, 'revenue')} — current cycle from the 8th"
     ]
     for index, (master_id, paid_leads, revenue, conversion) in enumerate(rows, start=1):
         lines.append(
             f"{index}. {master_id} — {format_money(revenue)} USDT, "
-            f"{paid_leads} Gift leads, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
+            f"{paid_leads} Value leads, {Decimal(conversion or 0).quantize(Decimal('0.01'))}%"
         )
     bot.send_message(call.message.chat.id, "\n".join(lines))
     bot.answer_callback_query(call.id)
@@ -1943,7 +1958,7 @@ def receive_admin_edit_gift_order(message):
         msg = bot.send_message(message.chat.id, "Enter a valid numeric Date request ID:")
         bot.register_next_step_handler(msg, receive_admin_edit_gift_order)
         return
-    msg = bot.send_message(message.chat.id, f"🎁 Enter the correct Gift amount for #{order_id} (USDT):")
+    msg = bot.send_message(message.chat.id, f"🎁 Enter the correct Value amount for #{order_id} (USDT):")
     bot.register_next_step_handler(msg, receive_admin_edit_gift_amount, order_id)
 
 
@@ -1960,25 +1975,25 @@ def receive_admin_edit_gift_amount(message, order_id):
             actor_display=actor_name(message.from_user),
         )
     except (ValueError, InvalidOperation) as e:
-        bot.send_message(message.chat.id, f"❌ Gift was not changed: {e}")
+        bot.send_message(message.chat.id, f"❌ Value was not changed: {e}")
         return
     except Exception as e:
         log("EDIT GIFT ERROR", repr(e))
-        notify_admin(f"❌ EDIT GIFT ERROR for #{order_id}: {repr(e)}")
-        bot.send_message(message.chat.id, "❌ Could not update Gift. Check the admin log.")
+        notify_admin(f"❌ EDIT VALUE ERROR for #{order_id}: {repr(e)}")
+        bot.send_message(message.chat.id, "❌ Could not update Value. Check the admin log.")
         return
 
     bot.send_message(
         message.chat.id,
-        f"""✅ Gift corrected for Date request #{order_id}
+        f"""✅ Value corrected for Date request #{order_id}
 
-🎁 Gift: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT
+🎁 Value: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT
 💸 Fee: {format_money(result['old_commission'])} → {format_money(result['new_commission'])} USDT
 💼 Swapper {result['master_id']} balance: {format_money(result['new_balance'])} USDT""",
     )
     notify_admin(
-        f"✏️ Gift corrected for Date request #{order_id}\n"
-        f"Gift: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT\n"
+        f"✏️ Value corrected for Date request #{order_id}\n"
+        f"Value: {format_money(result['old_amount'])} → {format_money(result['new_amount'])} USDT\n"
         f"Swapper: {result['master_id']}"
     )
 
@@ -2710,7 +2725,7 @@ def gift_channel_worker():
             log("GIFT SENT TO CHANNEL", order_id)
         except Exception as e:
             log("GIFT CHANNEL SEND ERROR", order_id, repr(e))
-            notify_admin(f"❌ Could not send Gift #{order_id} to the Gifts channel")
+            notify_admin(f"❌ Could not send Value #{order_id} to the Values channel")
         finally:
             gift_channel_queue.task_done()
 
@@ -2723,7 +2738,7 @@ def prepare_gift_channel():
                 try:
                     bot.send_message(
                         admin_id,
-                        "🎁 SwapDate Gifts channel created. "
+                        "🎁 SwapDate Values channel created. "
                         f"Open and join it here:\n{invite_link}",
                     )
                 except Exception as e:
@@ -2731,7 +2746,7 @@ def prepare_gift_channel():
         log("GIFT CHANNEL READY", invite_link)
     except Exception as e:
         log("GIFT CHANNEL SETUP ERROR", repr(e))
-        notify_admin(f"❌ Could not prepare the Gifts channel: {repr(e)}")
+        notify_admin(f"❌ Could not prepare the Values channel: {repr(e)}")
 
 
 def prepare_dispute_channel():
@@ -2761,7 +2776,7 @@ def archive_channel_cleanup_worker():
             log("ARCHIVE CHANNELS CLEANED", deleted_counts)
         except Exception as e:
             log("ARCHIVE CHANNEL CLEANUP ERROR", repr(e))
-            notify_admin(f"❌ Could not clean old Gifts/Disputes channel messages: {repr(e)}")
+            notify_admin(f"❌ Could not clean old Values/Disputes channel messages: {repr(e)}")
         time.sleep(ARCHIVE_CHANNEL_CLEANUP_INTERVAL_SECONDS)
 
 
@@ -2896,16 +2911,16 @@ def mark_paid(call):
 
         payment_status, assigned_master_id = row
         if assigned_master_id != master_id:
-            bot.answer_callback_query(call.id, "Only the assigned Swapper can send Gift")
+            bot.answer_callback_query(call.id, "Only the assigned Swapper can send Value")
             return
 
         if payment_status in ("PAID", "GIFT"):
-            bot.answer_callback_query(call.id, "Gift was already recorded")
+            bot.answer_callback_query(call.id, "Value was already recorded")
             return
 
         msg = bot.send_message(
             master_id,
-            f"Enter the total Gift amount for request #{order_id} (USDT):",
+            f"Enter the total Value amount for request #{order_id} (USDT):",
         )
         bot.register_next_step_handler(
             msg,
@@ -2917,7 +2932,7 @@ def mark_paid(call):
 
     except Exception as e:
         log("GIFT ERROR", repr(e))
-        notify_admin(f"❌ GIFT ERROR: {repr(e)}")
+        notify_admin(f"❌ VALUE ERROR: {repr(e)}")
 
 
 def save_paid_amount(message, order_id, source_group_id):
@@ -2964,7 +2979,7 @@ def save_paid_amount(message, order_id, source_group_id):
 
         if payment_status in ("PAID", "GIFT"):
             conn.rollback()
-            bot.send_message(master_id, "Gift was already recorded; balance was not charged again")
+            bot.send_message(master_id, "Value was already recorded; balance was not charged again")
             return
 
         cur.execute(
@@ -3057,8 +3072,8 @@ def save_paid_amount(message, order_id, source_group_id):
     )
 
     notify_admin(
-        f"🎁 Date request #{order_id}: marked as GIFT\n"
-        f"Gift total: {paid_amount} USDT\n"
+        f"🎁 Date request #{order_id}: marked as VALUE\n"
+        f"Value total: {paid_amount} USDT\n"
         f"🔄 Swapper fee (30%): {commission} USDT\n"
         f"💼 Swapper balance: {master_balance} USDT"
     )
@@ -3098,7 +3113,7 @@ def save_gift_return_prediction(call):
             return
         if payment_status not in ("GIFT", "PAID"):
             conn.rollback()
-            bot.answer_callback_query(call.id, "Gift has not been recorded", show_alert=True)
+            bot.answer_callback_query(call.id, "Value has not been recorded", show_alert=True)
             return
         cur.execute(
             "UPDATE orders SET gift_client_will_return = %s WHERE id = %s",
@@ -3243,7 +3258,7 @@ def start_dispute(call):
             )
             return
         if payment_status in ("GIFT", "PAID"):
-            bot.answer_callback_query(call.id, "Gift was already recorded", show_alert=True)
+            bot.answer_callback_query(call.id, "Value was already recorded", show_alert=True)
             return
         if payment_status == "DISPUTE" or order_status == "DISPUTE":
             bot.answer_callback_query(call.id, "Dispute is already open")
@@ -3590,11 +3605,11 @@ function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&a
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
 function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
 function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
-function chart(days){const max=Math.max(1,...days.flatMap(day=>[day.gifts,day.disputes])),width=Math.max(720,days.length*34),height=value=>value?Math.max(4,value/max*115):0;return `<div class="chart-wrap"><div class="chart" style="min-width:${width}px">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.gifts} Gift, ${day.disputes} Dispute"><div class="bars"><div class="bar-col"><span class="count">${day.gifts||''}</span><div class="bar gift" style="height:${height(day.gifts)}px"></div></div><div class="bar-col"><span class="count">${day.disputes||''}</span><div class="bar dispute" style="height:${height(day.disputes)}px"></div></div></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="legend"><span><i class="gift"></i>Gift</span><span><i class="dispute"></i>Dispute</span></div><div class="chart-note">Daily results by date</div></div>`}
+function chart(days){const max=Math.max(1,...days.flatMap(day=>[day.gifts,day.disputes])),width=Math.max(720,days.length*34),height=value=>value?Math.max(4,value/max*115):0;return `<div class="chart-wrap"><div class="chart" style="min-width:${width}px">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.gifts} Value, ${day.disputes} Dispute"><div class="bars"><div class="bar-col"><span class="count">${day.gifts||''}</span><div class="bar gift" style="height:${height(day.gifts)}px"></div></div><div class="bar-col"><span class="count">${day.disputes||''}</span><div class="bar dispute" style="height:${height(day.disputes)}px"></div></div></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="legend"><span><i class="gift"></i>Value</span><span><i class="dispute"></i>Dispute</span></div><div class="chart-note">Daily results by date</div></div>`}
 function fillSelect(select,items,allLabel){const selected=select.value;select.innerHTML=`<option value="">${allLabel}</option>`+items.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');if([...select.options].some(option=>option.value===selected))select.value=selected}
-const helpCopy={leads:['All Date leads','Date Requests created during the selected period after applying the Operator, Swapper and Persona filters.'],gifts:['Gift clients','Requests whose Gift was confirmed during the selected period. The USDT value is the sum of their final Gift amounts.'],disputes:['Disputes','Requests where a Dispute was opened during the selected period after applying the selected filters.'],conversion:['Gift conversion','Gift clients divided by Date Requests created in the selected period, multiplied by 100.'],bestDay:['Best day','The calendar date with the highest number of Date Requests created in the selected period.'],bestHour:['Best hour','The one-hour interval with the highest number of Date Requests created. Time is shown in Israel time.'],chart:['Work by days','For every date, green shows confirmed Gifts and red shows opened Disputes. Numbers above the bars are daily totals.']};
+const helpCopy={leads:['All Date leads','Date Requests created during the selected period after applying the Operator, Swapper and Persona filters.'],gifts:['Value clients','Requests whose Value was confirmed during the selected period. The USDT value is the sum of their final Value amounts.'],disputes:['Disputes','Requests where a Dispute was opened during the selected period after applying the selected filters.'],conversion:['Value conversion','Value clients divided by Date Requests created in the selected period, multiplied by 100.'],bestDay:['Best day','The calendar date with the highest number of Date Requests created in the selected period.'],bestHour:['Best hour','The one-hour interval with the highest number of Date Requests created. Time is shown in Israel time.'],chart:['Work by days','For every date, green shows confirmed Values and red shows opened Disputes. Numbers above the bars are daily totals.']};
 function info(key,extra=''){return `<button type="button" class="info ${extra}" data-help="${key}" aria-label="How this is calculated">i</button>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);form.append('operator',operatorInput.value);form.append('swapper',swapperInput.value);form.append('persona',personaInput.value);const data=await postForm('/api/monthly-leads',form);fillSelect(operatorInput,data.filters.operators,'All Operators');fillSelect(swapperInput,data.filters.swappers,'All Swappers');fillSelect(personaInput,data.filters.personas,'All Personas');content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat">${info('leads')}<strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat">${info('gifts')}<strong>${data.gifts.length}</strong>Gift clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat">${info('disputes')}<strong>${data.disputes.length}</strong>Disputes</div><div class="stat">${info('conversion')}<strong>${esc(data.overall.conversion)}%</strong>Gift conversion</div><div class="stat">${info('bestDay')}<strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat">${info('bestHour')}<strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days ${info('chart','section-info')}</h2>${chart(data.daily)}<h2 class="section">🎁 Gift clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Gifts</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);form.append('operator',operatorInput.value);form.append('swapper',swapperInput.value);form.append('persona',personaInput.value);const data=await postForm('/api/monthly-leads',form);fillSelect(operatorInput,data.filters.operators,'All Operators');fillSelect(swapperInput,data.filters.swappers,'All Swappers');fillSelect(personaInput,data.filters.personas,'All Personas');content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat">${info('leads')}<strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat">${info('gifts')}<strong>${data.gifts.length}</strong>Value clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat">${info('disputes')}<strong>${data.disputes.length}</strong>Disputes</div><div class="stat">${info('conversion')}<strong>${esc(data.overall.conversion)}%</strong>Value conversion</div><div class="stat">${info('bestDay')}<strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat">${info('bestHour')}<strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days ${info('chart','section-info')}</h2>${chart(data.daily)}<h2 class="section">🎁 Value clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Values</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
 const help=document.getElementById('help'),helpTitle=document.getElementById('helpTitle'),helpText=document.getElementById('helpText');function closeHelp(){help.classList.add('hidden')}content.addEventListener('click',event=>{const button=event.target.closest('.info');if(!button)return;const copy=helpCopy[button.dataset.help];if(!copy)return;helpTitle.textContent=copy[0];helpText.textContent=copy[1];help.classList.remove('hidden')});document.getElementById('helpClose').addEventListener('click',closeHelp);help.addEventListener('click',event=>{if(event.target===help)closeHelp()});
 modeInput.addEventListener('change',()=>{const custom=modeInput.value==='custom';monthInput.classList.toggle('hidden',custom);customInput.classList.toggle('hidden',!custom)});document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
@@ -4749,7 +4764,7 @@ def send_unresolved_lead_reminders():
                         master_id,
                         f"""⏰ Hey, Swapper! What happened with Date Request #{order_id}? 👀
 
-It has been 8 hours, but the lead still has no 🎁 Gift and no ⚠️ Dispute.
+It has been 8 hours, but the lead still has no 🎁 Value and no ⚠️ Dispute.
 Please check the chat and update the status — this lead is starting to feel forgotten 🥲{group_line}""",
                     )
                     log("UNRESOLVED LEAD REMINDER SENT", order_id, master_id)
@@ -4788,13 +4803,13 @@ try:
         log("ORDER 904 GIFT CORRECTED", "1500.00 USDT")
 except Exception as e:
     log("ORDER 904 GIFT CORRECTION ERROR", repr(e))
-    notify_admin(f"❌ ORDER 904 GIFT CORRECTION ERROR: {repr(e)}")
+    notify_admin(f"❌ ORDER 904 VALUE CORRECTION ERROR: {repr(e)}")
 try:
     if apply_order_904_duplicate_charge_fix():
         log("ORDER 904 DUPLICATE GIFT REFUND APPLIED", "900.00 USDT")
 except Exception as e:
     log("ORDER 904 DUPLICATE GIFT REFUND ERROR", repr(e))
-    notify_admin(f"❌ ORDER 904 DUPLICATE GIFT REFUND ERROR: {repr(e)}")
+    notify_admin(f"❌ ORDER 904 DUPLICATE VALUE REFUND ERROR: {repr(e)}")
 try:
     if remove_swapper_8649754773_once():
         log("SWAPPER REMOVED", 8649754773)

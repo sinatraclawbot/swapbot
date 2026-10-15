@@ -89,16 +89,16 @@ def gift_message(row):
     operator = f"@{client_username}" if client_username else str(client_telegram_id or "—")
     recorded = gift_recorded_at or created_at
     recorded_text = recorded.strftime("%Y-%m-%d %H:%M") if recorded else "—"
-    return f"""🎁 Gift — Date Request #{order_id}
+    return f"""🎁 Value — Date Request #{order_id}
 
 💃 Persona: {persona or '—'}
 🔄 Swapper: {master_telegram_id or '—'}
 👤 Operator: {operator}
 👤 Mate: {contact_text or '—'}
 🏷 Requested Value: {initial_price or 0} USDT
-🎁 Final Gift: {paid_amount or 0} USDT
+🎁 Final Value: {paid_amount or 0} USDT
 💼 Swapper fee: {commission_amount or 0} USDT
-👆 Gift confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
+👆 Value confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
 🕒 Confirmed: {recorded_text}"""
 
 
@@ -132,8 +132,8 @@ async def ensure_gift_channel_async():
 
             result = await client(
                 CreateChannelRequest(
-                    title="🎁 SwapDate Gifts",
-                    about="Private archive of all confirmed SwapDate Gifts",
+                    title="🎁 SwapDate Values",
+                    about="Private archive of all confirmed SwapDate Values",
                     broadcast=True,
                     megagroup=False,
                 )
@@ -588,6 +588,11 @@ async def create_group_async(order_id):
 
         returning_label = "\n🔁 Returning Client: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
+        payment_status_text = {
+            "GIFT": "VALUE",
+            "PAID": "VALUE",
+            "NO_GIFT": "NO_VALUE",
+        }.get(payment_status, payment_status)
         group_message = f"""📦 Date Request #{order_id}
 
 Value: {price} USDT
@@ -599,7 +604,7 @@ Persona: {profile_name}
 Master ID: {master_label}
 
 Order status: {order_status}
-Payment status: {payment_status}
+Payment status: {payment_status_text}
 {returning_label}
 {blacklist_label}
 """
