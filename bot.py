@@ -1476,7 +1476,7 @@ Operator: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
 Payment: {payment_status or '—'}
-Requested Gift: {format_money(price)} USDT
+Requested Value: {format_money(price)} USDT
 Final amount: {final_amount_text}
 Difference: {difference_text}
 Expected Date to return: {return_prediction}
@@ -2191,7 +2191,7 @@ def open_create_persona(message):
 def get_contact(message):
     user_data[message.chat.id]["contact_text"] = message.text
     user_data[message.chat.id]["date_type"] = "—"
-    msg = bot.send_message(message.chat.id, "Enter Gift (USDT):")
+    msg = bot.send_message(message.chat.id, "Enter Value (USDT):")
     bot.register_next_step_handler(msg, get_price)
 
 
@@ -2201,7 +2201,7 @@ def select_date_type(call):
         date_type = call.data.replace("dt_", "")
         user_data[call.from_user.id]["date_type"] = date_type
 
-        msg = bot.send_message(call.from_user.id, "Enter Gift (USDT):")
+        msg = bot.send_message(call.from_user.id, "Enter Value (USDT):")
         bot.register_next_step_handler(msg, get_price)
         bot.answer_callback_query(call.id)
     except Exception as e:
@@ -2213,7 +2213,7 @@ def get_price(message):
     try:
         user_data[message.chat.id]["price"] = int(message.text)
     except ValueError:
-        msg = bot.send_message(message.chat.id, "Enter Gift as a number, for example 288")
+        msg = bot.send_message(message.chat.id, "Enter Value as a number, for example 288")
         bot.register_next_step_handler(msg, get_price)
         return
 
@@ -2271,7 +2271,7 @@ def receive_time_picker(message):
     if payload.get("type") == "create_date":
         contact = str(payload.get("contact", "")).strip()
         if len(contact) < 3 or len(contact) > 200:
-            bot.send_message(message.chat.id, "❌ Contact must contain 3–200 characters.")
+            bot.send_message(message.chat.id, "❌ Mate must contain 3–200 characters.")
             return
         try:
             price = Decimal(str(payload.get("price", "")).replace(",", ".")).quantize(
@@ -2280,7 +2280,7 @@ def receive_time_picker(message):
             if price <= 0:
                 raise InvalidOperation
         except (InvalidOperation, ValueError):
-            bot.send_message(message.chat.id, "❌ Enter a positive Gift amount.")
+            bot.send_message(message.chat.id, "❌ Enter a positive Value amount.")
             return
         format_type = payload.get("format")
         if format_type not in ("Incall", "Outcall"):
@@ -2507,8 +2507,8 @@ def save_order(message, selected_persona=None, selected_user=None):
 
 Operator TG ID: {message.chat.id}
 Operator username: @{order_user.username if order_user.username else 'none'}
-Contact: {data['contact_text']}
-Gift: {data['price']} USDT
+Mate: {data['contact_text']}
+Value: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
@@ -2544,8 +2544,8 @@ def send_order_to_masters(order_id, data):
     blacklist_label = "\n🚫 Blacklisted contact" if data.get("is_blacklisted_contact") else ""
     text = f"""🆕 New Date Request #{order_id}
 
-Contact: {data['contact_text']}
-Gift: {data['price']} USDT
+Mate: {data['contact_text']}
+Value: {data['price']} USDT
 Format: {data['format_type']}
 Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
@@ -4351,10 +4351,10 @@ def create_date_page():
   <h1>✨ Create Date</h1>
   <p class="subtitle">Complete everything in one form</p>
   <div class="card">
-    <label class="field" for="contact">Contact</label>
-    <input id="contact" type="text" maxlength="200" placeholder="Phone, @username or contact" autocomplete="off">
+    <label class="field" for="contact">Mate</label>
+    <input id="contact" type="text" maxlength="200" placeholder="Phone, @username or Mate" autocomplete="off">
 
-    <label class="field" for="price">Gift (USDT)</label>
+    <label class="field" for="price">Value (USDT)</label>
     <input id="price" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="288">
 
     <label class="field">Format</label>
@@ -4436,8 +4436,8 @@ def create_date_page():
       const price = priceInput.value.trim();
       const format = document.querySelector('input[name="format"]:checked')?.value;
       const persona = personaInput.value;
-      if (contact.length < 3) { error.textContent = 'Enter the Contact.'; return; }
-      if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Gift amount.'; return; }
+      if (contact.length < 3) { error.textContent = 'Enter the Mate.'; return; }
+      if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Value amount.'; return; }
       if (!startInput.value || !endInput.value) { error.textContent = 'Choose Start and End time.'; return; }
       if (!persona) { error.textContent = 'Select a Persona.'; return; }
       const start = selectedStart();

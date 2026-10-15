@@ -63,7 +63,7 @@ def dispute_message(row):
 
 🔄 Swapper: {master_telegram_id or '—'}
 👤 Operator: {client}
-📞 Contact: {contact_text or '—'}
+👤 Mate: {contact_text or '—'}
 📝 Reason: {dispute_comment or '—'}
 🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
 👆 Dispute pushed by: {dispute_actor_name or '—'} (TG ID: {dispute_actor_id or '—'})
@@ -94,8 +94,8 @@ def gift_message(row):
 💃 Persona: {persona or '—'}
 🔄 Swapper: {master_telegram_id or '—'}
 👤 Operator: {operator}
-📞 Contact: {contact_text or '—'}
-🏷 Requested Gift: {initial_price or 0} USDT
+👤 Mate: {contact_text or '—'}
+🏷 Requested Value: {initial_price or 0} USDT
 🎁 Final Gift: {paid_amount or 0} USDT
 💼 Swapper fee: {commission_amount or 0} USDT
 👆 Gift confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
@@ -590,9 +590,9 @@ async def create_group_async(order_id):
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         group_message = f"""📦 Date Request #{order_id}
 
-Gift: {price} USDT
+Value: {price} USDT
 Operator: {client_label}
-Client: {contact_text}
+Mate: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}
 Persona: {profile_name}
