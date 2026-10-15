@@ -1585,10 +1585,9 @@ def get_balance(message):
         cur.close()
         conn.close()
 
-        if not swapper_row and not creator_row:
-            bot.send_message(message.chat.id, "Wallet not found")
-            return
         sections = [f"💼 Wallet{' · ' + str(target_id) if target_id != message.from_user.id else ''}"]
+        if not swapper_row and not creator_row:
+            sections.append("No available balance yet.")
         if swapper_row:
             balance, total_gift, cycle_started_at = swapper_row
             cycle_label = cycle_started_at.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d")
@@ -1618,7 +1617,7 @@ def get_balance(message):
                 f"🚀 Started: {first_label}"
             )
         wallet_keyboard = None
-        if creator_row and target_id == message.from_user.id:
+        if target_id == message.from_user.id:
             wallet_keyboard = InlineKeyboardMarkup()
             wallet_keyboard.add(
                 InlineKeyboardButton("💸 Withdrawal", callback_data="date_creator_withdrawal")
@@ -1658,7 +1657,7 @@ def send_date_creator_withdrawal_prompt(user_id, chat_id):
         cur.close()
         conn.close()
     if not row:
-        bot.send_message(chat_id, "Date Creator wallet not found yet.")
+        bot.send_message(chat_id, "No available balance to withdraw yet.")
         return
     available = Decimal(row[0] or 0)
     if available <= 0:
