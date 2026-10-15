@@ -1487,7 +1487,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
     return f"""📋 Lead #{lead_id}
 
 Persona: {client_name}
-Operator: {username_text}
+Date Creator: {username_text}
 Created: {created_at.strftime('%Y-%m-%d %H:%M')}
 Status: {status}
 Payment: {payment_status_text}
@@ -2520,8 +2520,8 @@ def save_order(message, selected_persona=None, selected_user=None):
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
         notify_admin(f"""🆕 New Date Request #{order_id}
 
-Operator TG ID: {message.chat.id}
-Operator username: @{order_user.username if order_user.username else 'none'}
+Date Creator TG ID: {message.chat.id}
+Date Creator username: @{order_user.username if order_user.username else 'none'}
 Mate: {data['contact_text']}
 Value: {data['price']} USDT
 Format: {data['format_type']}
@@ -2606,7 +2606,7 @@ def complete_accepted_order_group(order_id, master_id, client_id):
         notify_admin(f"""✅ Group created for Date Request #{order_id}
 
 🔄 Swapper TG ID: {master_id}
-Operator TG ID: {client_id}
+Date Creator TG ID: {client_id}
 Group ID: {group_chat_id}
 Invite: {invite_link}
 """)
@@ -2618,7 +2618,7 @@ Invite: {invite_link}
             )
         except Exception as e:
             log("SEND TO CLIENT ERROR", repr(e))
-            notify_admin(f"❌ Could not send invite to Operator for request #{order_id}: {repr(e)}")
+            notify_admin(f"❌ Could not send invite to Date Creator for request #{order_id}: {repr(e)}")
 
         try:
             bot.send_message(
@@ -2849,7 +2849,7 @@ def accept_order(call):
                 )
                 notify_admin(
                     f"🔄 Recovered group creation for request #{order_id}\n"
-                    f"🔄 Swapper TG ID: {master_id}\nOperator TG ID: {existing_client_id}"
+                    f"🔄 Swapper TG ID: {master_id}\nDate Creator TG ID: {existing_client_id}"
                 )
                 return
             answer_callback_safely(call.id, "This request was already taken")
@@ -2874,7 +2874,7 @@ def accept_order(call):
             log("ACCEPT CONFIRMATION MESSAGE ERROR", order_id, repr(e))
         notify_admin(
             f"✅ Swapper accepted request #{order_id}\n"
-            f"🔄 Swapper TG ID: {master_id}\nOperator TG ID: {client_id}"
+            f"🔄 Swapper TG ID: {master_id}\nDate Creator TG ID: {client_id}"
         )
 
     except Exception as e:
@@ -3253,7 +3253,7 @@ def start_dispute(call):
         if call.from_user.id not in (master_id, operator_id) and not is_admin(call.from_user.id):
             bot.answer_callback_query(
                 call.id,
-                "Only the Operator, assigned Swapper, or an admin can open Dispute",
+                "Only the Date Creator, assigned Swapper, or an admin can open Dispute",
                 show_alert=True,
             )
             return
@@ -3576,7 +3576,7 @@ def finalize_dispute(call):
     notify_admin(
         f"⚠️ Date request #{order_id}: dispute opened\n"
         f"By: {dispute_actor_text}\n"
-        f"Operator TG ID: {client_id}\n"
+        f"Date Creator TG ID: {client_id}\n"
         f"Reason: {comment}\n"
         f"Contact blacklisted: {blacklist_text}"
     )
@@ -3596,20 +3596,20 @@ def monthly_leads_page():
 .stat{position:relative}.info{position:absolute;top:6px;right:6px;width:22px;min-width:22px;min-height:22px;height:22px;padding:0;border-radius:50%;font-size:13px;line-height:22px;background:var(--tg-theme-button-color,#2481cc)}.section-info{position:static;display:inline-block;margin-left:5px;vertical-align:2px}.help{position:fixed;z-index:20;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.45)}.help.hidden{display:none}.help-box{position:relative;width:min(100%,380px);padding:20px;border-radius:18px;background:var(--tg-theme-bg-color,#fff);box-shadow:0 10px 35px rgba(0,0,0,.25)}.help-box h3{margin:0 30px 8px 0}.help-box p{margin:0;line-height:1.45}.help-close{position:absolute;top:8px;right:8px;width:32px;min-width:32px;min-height:32px;height:32px;padding:0;border-radius:50%;font-size:20px}
 </style></head><body>
 <h1>📔 Dating Journal</h1><p class="sub">Choose an 8→8 cycle or any custom date range</p>
-<div class="picker"><select id="mode"><option value="cycle">Cycle 8 → 8</option><option value="custom">Custom dates</option></select><input id="month" type="month"><div id="custom" class="custom hidden"><input id="startDate" type="date" aria-label="Start date"><input id="endDate" type="date" aria-label="End date"></div><select id="operator"><option value="">All Operators</option></select><select id="swapper"><option value="">All Swappers</option></select><select id="persona"><option value="">All Personas</option><option value="__unknown__">Unknown</option></select><button id="load">Show</button></div>
+<div class="picker"><select id="mode"><option value="cycle">Cycle 8 → 8</option><option value="custom">Custom dates</option></select><input id="month" type="month"><div id="custom" class="custom hidden"><input id="startDate" type="date" aria-label="Start date"><input id="endDate" type="date" aria-label="End date"></div><select id="operator"><option value="">All Date Creators</option></select><select id="swapper"><option value="">All Swappers</option></select><select id="persona"><option value="">All Personas</option><option value="__unknown__">Unknown</option></select><button id="load">Show</button></div>
 <div id="error" class="error"></div><div id="content"></div><div id="help" class="help hidden"><div class="help-box"><button id="helpClose" class="help-close" type="button">×</button><h3 id="helpTitle"></h3><p id="helpText"></p></div></div>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();const accessToken=new URLSearchParams(location.search).get('token')||'',modeInput=document.getElementById('mode'),monthInput=document.getElementById('month'),customInput=document.getElementById('custom'),startInput=document.getElementById('startDate'),endInput=document.getElementById('endDate'),operatorInput=document.getElementById('operator'),swapperInput=document.getElementById('swapper'),personaInput=document.getElementById('persona'),error=document.getElementById('error'),content=document.getElementById('content');
 const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;monthInput.value=today.slice(0,7);endInput.value=today;const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);startInput.value=`${weekAgo.getFullYear()}-${String(weekAgo.getMonth()+1).padStart(2,'0')}-${String(weekAgo.getDate()).padStart(2,'0')}`;
 function esc(value){return String(value??'—').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function postForm(url,form){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText||'{}')}catch(_){result={error:'Invalid server response'}}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||`Request failed (${xhr.status})`))};xhr.onerror=()=>reject(new Error('Connection failed. Reopen the Mini App and try again.'));xhr.send(form)})}
-function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
-function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Operator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
+function giftCard(item){return `<div class="lead"><b>🎁 #${esc(item.id)} · ${esc(item.gift)} USDT</b><br>Client: ${esc(item.contact)}<br>Date Creator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br><span class="muted">Confirmed: ${esc(item.event_at)}</span></div>`}
+function disputeCard(item){return `<div class="lead"><b>⚠️ #${esc(item.id)}</b><br>Client: ${esc(item.contact)}<br>Date Creator: ${esc(item.operator)}<br>Persona: ${esc(item.persona)}<br>Swapper: ${esc(item.swapper)}<br>Reason: ${esc(item.reason)}<br><span class="muted">Opened: ${esc(item.event_at)}</span></div>`}
 function chart(days){const max=Math.max(1,...days.flatMap(day=>[day.gifts,day.disputes])),width=Math.max(720,days.length*34),height=value=>value?Math.max(4,value/max*115):0;return `<div class="chart-wrap"><div class="chart" style="min-width:${width}px">${days.map(day=>`<div class="day" title="${esc(day.date)}: ${day.gifts} Value, ${day.disputes} Dispute"><div class="bars"><div class="bar-col"><span class="count">${day.gifts||''}</span><div class="bar gift" style="height:${height(day.gifts)}px"></div></div><div class="bar-col"><span class="count">${day.disputes||''}</span><div class="bar dispute" style="height:${height(day.disputes)}px"></div></div></div><small>${esc(day.label)}</small></div>`).join('')}</div><div class="legend"><span><i class="gift"></i>Value</span><span><i class="dispute"></i>Dispute</span></div><div class="chart-note">Daily results by date</div></div>`}
 function fillSelect(select,items,allLabel){const selected=select.value;select.innerHTML=`<option value="">${allLabel}</option>`+items.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');if([...select.options].some(option=>option.value===selected))select.value=selected}
-const helpCopy={leads:['All Date leads','Date Requests created during the selected period after applying the Operator, Swapper and Persona filters.'],gifts:['Value clients','Requests whose Value was confirmed during the selected period. The USDT value is the sum of their final Value amounts.'],disputes:['Disputes','Requests where a Dispute was opened during the selected period after applying the selected filters.'],conversion:['Value conversion','Value clients divided by Date Requests created in the selected period, multiplied by 100.'],bestDay:['Best day','The calendar date with the highest number of Date Requests created in the selected period.'],bestHour:['Best hour','The one-hour interval with the highest number of Date Requests created. Time is shown in Israel time.'],chart:['Work by days','For every date, green shows confirmed Values and red shows opened Disputes. Numbers above the bars are daily totals.']};
+const helpCopy={leads:['All Date leads','Date Requests created during the selected period after applying the Date Creator, Swapper and Persona filters.'],gifts:['Value clients','Requests whose Value was confirmed during the selected period. The USDT value is the sum of their final Value amounts.'],disputes:['Disputes','Requests where a Dispute was opened during the selected period after applying the selected filters.'],conversion:['Value conversion','Value clients divided by Date Requests created in the selected period, multiplied by 100.'],bestDay:['Best day','The calendar date with the highest number of Date Requests created in the selected period.'],bestHour:['Best hour','The one-hour interval with the highest number of Date Requests created. Time is shown in Israel time.'],chart:['Work by days','For every date, green shows confirmed Values and red shows opened Disputes. Numbers above the bars are daily totals.']};
 function info(key,extra=''){return `<button type="button" class="info ${extra}" data-help="${key}" aria-label="How this is calculated">i</button>`}
-async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);form.append('operator',operatorInput.value);form.append('swapper',swapperInput.value);form.append('persona',personaInput.value);const data=await postForm('/api/monthly-leads',form);fillSelect(operatorInput,data.filters.operators,'All Operators');fillSelect(swapperInput,data.filters.swappers,'All Swappers');fillSelect(personaInput,data.filters.personas,'All Personas');content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat">${info('leads')}<strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat">${info('gifts')}<strong>${data.gifts.length}</strong>Value clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat">${info('disputes')}<strong>${data.disputes.length}</strong>Disputes</div><div class="stat">${info('conversion')}<strong>${esc(data.overall.conversion)}%</strong>Value conversion</div><div class="stat">${info('bestDay')}<strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat">${info('bestHour')}<strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days ${info('chart','section-info')}</h2>${chart(data.daily)}<h2 class="section">🎁 Value clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Values</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
+async function load(){error.textContent='';content.innerHTML='<div class="empty">Loading…</div>';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',accessToken);form.append('mode',modeInput.value);form.append('month',monthInput.value);form.append('start_date',startInput.value);form.append('end_date',endInput.value);form.append('operator',operatorInput.value);form.append('swapper',swapperInput.value);form.append('persona',personaInput.value);const data=await postForm('/api/monthly-leads',form);fillSelect(operatorInput,data.filters.operators,'All Date Creators');fillSelect(swapperInput,data.filters.swappers,'All Swappers');fillSelect(personaInput,data.filters.personas,'All Personas');content.innerHTML=`<div class="empty">Period: ${esc(data.cycle_label)}</div><div class="summary"><div class="stat">${info('leads')}<strong>${data.overall.total_leads}</strong>All Date leads</div><div class="stat">${info('gifts')}<strong>${data.gifts.length}</strong>Value clients<br><span class="muted">${esc(data.total_gift)} USDT</span></div><div class="stat">${info('disputes')}<strong>${data.disputes.length}</strong>Disputes</div><div class="stat">${info('conversion')}<strong>${esc(data.overall.conversion)}%</strong>Value conversion</div><div class="stat">${info('bestDay')}<strong>${esc(data.overall.best_day)}</strong>Best day<br><span class="muted">${data.overall.best_day_count} leads</span></div><div class="stat">${info('bestHour')}<strong>${esc(data.overall.best_hour)}</strong>Best hour<br><span class="muted">${data.overall.best_hour_count} leads</span></div></div><h2 class="section">📊 Work by days ${info('chart','section-info')}</h2>${chart(data.daily)}<h2 class="section">🎁 Value clients</h2>${data.gifts.length?data.gifts.map(giftCard).join(''):'<div class="empty">No Values</div>'}<h2 class="section">⚠️ Dispute leads</h2>${data.disputes.length?data.disputes.map(disputeCard).join(''):'<div class="empty">No Disputes</div>'}`}catch(e){content.innerHTML='';error.textContent=e.message}}
 const help=document.getElementById('help'),helpTitle=document.getElementById('helpTitle'),helpText=document.getElementById('helpText');function closeHelp(){help.classList.add('hidden')}content.addEventListener('click',event=>{const button=event.target.closest('.info');if(!button)return;const copy=helpCopy[button.dataset.help];if(!copy)return;helpTitle.textContent=copy[0];helpText.textContent=copy[1];help.classList.remove('hidden')});document.getElementById('helpClose').addEventListener('click',closeHelp);help.addEventListener('click',event=>{if(event.target===help)closeHelp()});
 modeInput.addEventListener('change',()=>{const custom=modeInput.value==='custom';monthInput.classList.toggle('hidden',custom);customInput.classList.toggle('hidden',!custom)});document.getElementById('load').addEventListener('click',load);load();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
@@ -3670,18 +3670,18 @@ def monthly_leads_api():
         if operator_filter.startswith("username:"):
             operator_username = operator_filter.split(":", 1)[1].strip().lower()
             if not operator_username:
-                raise ValueError("Select a valid Operator")
+                raise ValueError("Select a valid Date Creator")
             filter_sql += " AND LOWER(COALESCE(o.client_username, '')) = %s"
             filter_params.append(operator_username)
         elif operator_filter.startswith("id:"):
             try:
                 operator_id = int(operator_filter.split(":", 1)[1])
             except ValueError:
-                raise ValueError("Select a valid Operator")
+                raise ValueError("Select a valid Date Creator")
             filter_sql += " AND o.client_telegram_id = %s"
             filter_params.append(operator_id)
         elif operator_filter:
-            raise ValueError("Select a valid Operator")
+            raise ValueError("Select a valid Date Creator")
         if swapper_filter:
             try:
                 swapper_id = int(swapper_filter)

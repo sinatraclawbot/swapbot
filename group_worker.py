@@ -62,7 +62,7 @@ def dispute_message(row):
     return f"""⚠️ Dispute — Date Request #{order_id}
 
 🔄 Swapper: {master_telegram_id or '—'}
-👤 Operator: {client}
+👤 Date Creator: {client}
 👤 Mate: {contact_text or '—'}
 📝 Reason: {dispute_comment or '—'}
 🚫 Contact blacklisted: {'YES' if dispute_blacklisted else 'NO'}
@@ -93,7 +93,7 @@ def gift_message(row):
 
 💃 Persona: {persona or '—'}
 🔄 Swapper: {master_telegram_id or '—'}
-👤 Operator: {operator}
+👤 Date Creator: {operator}
 👤 Mate: {contact_text or '—'}
 🏷 Requested Value: {initial_price or 0} USDT
 🎁 Final Value: {paid_amount or 0} USDT
@@ -627,7 +627,7 @@ async def create_group_async(order_id):
         group_message = f"""📦 Date Request #{order_id}
 
 Value: {price} USDT
-Operator: {client_label}
+Date Creator: {client_label}
 Mate: {contact_text}
 Format: {format_type}
 Time: {time_from}-{time_to}
