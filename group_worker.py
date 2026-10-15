@@ -537,7 +537,7 @@ async def create_group_async(order_id):
         if normalized_contact_phone:
             cur.execute(
                 """
-                SELECT id, paid_amount, created_at, profile_name
+                SELECT id, price, paid_amount, created_at, profile_name
                 FROM orders
                 WHERE id <> %s
                   AND normalized_contact_phone = %s
@@ -611,8 +611,9 @@ async def create_group_async(order_id):
         if previous_values:
             previous_value_lines = [
                 f"• #{previous_id} · {created_at.strftime('%Y-%m-%d')} · "
-                f"{paid_amount} USDT · Persona: {profile_name or 'Unknown'}"
-                for previous_id, paid_amount, created_at, profile_name in previous_values
+                f"Initial Value: {initial_value or 0} USDT · "
+                f"Final Value: {paid_amount} USDT · Persona: {profile_name or 'Unknown'}"
+                for previous_id, initial_value, paid_amount, created_at, profile_name in previous_values
             ]
             previous_values_label = (
                 "\n\n👤 Mate Profile\n🎁 Previous confirmed Values:\n"
