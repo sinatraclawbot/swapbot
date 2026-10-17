@@ -2988,8 +2988,16 @@ def select_format(call):
 def receive_time_picker(message):
     try:
         payload = json.loads(message.web_app_data.data)
-        start_at = datetime.fromtimestamp(int(payload["start_ts"]), BOT_TIMEZONE)
-        end_at = datetime.fromtimestamp(int(payload["end_ts"]), BOT_TIMEZONE)
+        if payload.get("start_wall") and payload.get("end_wall"):
+            start_at = datetime.fromisoformat(payload["start_wall"]).replace(
+                tzinfo=BOT_TIMEZONE
+            )
+            end_at = datetime.fromisoformat(payload["end_wall"]).replace(
+                tzinfo=BOT_TIMEZONE
+            )
+        else:
+            start_at = datetime.fromtimestamp(int(payload["start_ts"]), BOT_TIMEZONE)
+            end_at = datetime.fromtimestamp(int(payload["end_ts"]), BOT_TIMEZONE)
         now = datetime.now(BOT_TIMEZONE)
         if start_at < now + timedelta(minutes=4):
             raise ValueError("Start time must be at least 5 minutes from now")
@@ -5190,6 +5198,9 @@ def create_date_page():
       return String(date.getHours()).padStart(2, '0') + ':' +
              String(date.getMinutes()).padStart(2, '0');
     }
+    function wallValue(date) {
+      return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${timeValue(date)}`;
+    }
     function dateFromTime(value, reference) {
       const parts = value.split(':').map(Number);
       const result = new Date(reference.getTime());
@@ -5240,6 +5251,7 @@ def create_date_page():
       createButton.disabled = true;
       tg.sendData(JSON.stringify({
         type: 'create_date', contact, price, format, persona,
+        start_wall: wallValue(start), end_wall: wallValue(end),
         start_ts: Math.floor(start.getTime() / 1000),
         end_ts: Math.floor(end.getTime() / 1000)
       }));
@@ -5326,6 +5338,9 @@ def time_picker_page():
       return String(date.getHours()).padStart(2, '0') + ':' +
              String(date.getMinutes()).padStart(2, '0');
     }
+    function wallValue(date) {
+      return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${timeValue(date)}`;
+    }
     function dateFromTime(value, reference) {
       const parts = value.split(':').map(Number);
       const result = new Date(reference.getTime());
@@ -5381,6 +5396,8 @@ def time_picker_page():
       }
       tg.sendData(JSON.stringify({
         type: 'date_time',
+        start_wall: wallValue(start),
+        end_wall: wallValue(end),
         start_ts: Math.floor(start.getTime() / 1000),
         end_ts: Math.floor(end.getTime() / 1000)
       }));
