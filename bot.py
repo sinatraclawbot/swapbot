@@ -4700,7 +4700,7 @@ def create_persona_page():
   <title>Create Persona</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: light; }
     * { box-sizing: border-box; }
     body { margin:0; padding:12px 12px calc(16px + env(safe-area-inset-bottom)); min-height:100dvh;
       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--tg-theme-text-color,#111);
@@ -5114,6 +5114,8 @@ def create_date_page():
     .times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
     .times label { min-width: 0; margin-top: 10px; }
     .times input { min-width: 0; padding-left: 7px; padding-right: 4px; }
+    input[type="time"] { color-scheme: inherit; }
+    input[type="time"]::-webkit-date-and-time-value { color: var(--tg-theme-text-color, #111); }
     .note { margin-top: 5px; color: var(--tg-theme-hint-color, #777); font-size: 11px; }
     .error { min-height: 18px; margin: 7px 2px 0; color: #d63333; font-size: 13px; font-weight: 650; }
     button {
@@ -5185,6 +5187,14 @@ def create_date_page():
     const personaInput = document.getElementById('persona');
     const error = document.getElementById('error');
     const createButton = document.getElementById('create');
+    function syncColorScheme() {
+      const scheme = tg.colorScheme === 'dark' ? 'dark' : 'light';
+      document.documentElement.style.colorScheme = scheme;
+      startInput.style.colorScheme = scheme;
+      endInput.style.colorScheme = scheme;
+    }
+    syncColorScheme();
+    tg.onEvent('themeChanged', syncColorScheme);
     personas.forEach(name => personaInput.add(new Option(name, name)));
 
     function roundUpFiveMinutes(date) {
@@ -5280,7 +5290,7 @@ def time_picker_page():
   <title>Time roulette</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: light; }
     * { box-sizing: border-box; }
     body {
       margin: 0; padding: 24px 18px;
@@ -5298,6 +5308,8 @@ def time_picker_page():
       color: var(--tg-theme-text-color, #111);
       background: var(--tg-theme-secondary-bg-color, #f3f3f3);
     }
+    input[type="time"] { color-scheme: inherit; }
+    input[type="time"]::-webkit-date-and-time-value { color: var(--tg-theme-text-color, #111); }
     .note { margin-top: 10px; font-size: 13px; }
     .error { min-height: 22px; margin-top: 14px; color: #d63333; font-weight: 600; }
     button {
@@ -5326,6 +5338,14 @@ def time_picker_page():
     const startInput = document.getElementById('start');
     const endInput = document.getElementById('end');
     const error = document.getElementById('error');
+    function syncColorScheme() {
+      const scheme = tg.colorScheme === 'dark' ? 'dark' : 'light';
+      document.documentElement.style.colorScheme = scheme;
+      startInput.style.colorScheme = scheme;
+      endInput.style.colorScheme = scheme;
+    }
+    syncColorScheme();
+    tg.onEvent('themeChanged', syncColorScheme);
 
     function roundUpFiveMinutes(date) {
       const result = new Date(date.getTime());
