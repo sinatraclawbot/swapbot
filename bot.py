@@ -855,6 +855,27 @@ def send_main_menu(chat_id: int, text: str):
     bot.send_message(chat_id, text, reply_markup=main_menu(chat_id))
 
 
+def send_cycle_progress_button(chat_id: int):
+    access_token = create_webapp_access_token(chat_id, 7 * 24 * 60 * 60)
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton(
+            "🎯 Open Cycle Progress",
+            web_app=WebAppInfo(
+                url=(
+                    f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress"
+                    f"?token={access_token}"
+                )
+            ),
+        )
+    )
+    bot.send_message(
+        chat_id,
+        "⚡ Follow the shared Value target for the current 8→8 cycle:",
+        reply_markup=keyboard,
+    )
+
+
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎁 Value", callback_data=f"gift_{order_id}"))
@@ -1523,8 +1544,17 @@ Balance/debt: {format_money(stats['balance'])} USDT"""
 def start(message):
     try:
         send_main_menu(message.chat.id, "Welcome. Tap 'Create Date'")
+        send_cycle_progress_button(message.chat.id)
     except Exception as e:
         log("START ERROR", repr(e))
+
+
+@bot.message_handler(commands=["progress"])
+def cycle_progress_command(message):
+    try:
+        send_cycle_progress_button(message.chat.id)
+    except Exception as e:
+        log("CYCLE PROGRESS BUTTON ERROR", repr(e))
 
 
 @bot.message_handler(commands=["id"])
