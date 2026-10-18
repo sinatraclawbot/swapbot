@@ -45,6 +45,7 @@ def get_conn():
 def dispute_message(row):
     (
         order_id,
+        persona,
         client_username,
         client_telegram_id,
         contact_text,
@@ -61,6 +62,7 @@ def dispute_message(row):
     opened_text = opened.strftime("%Y-%m-%d %H:%M") if opened else "—"
     return f"""⚠️ Dispute — Date Request #{order_id}
 
+💃 Persona: {persona or '—'}
 🔄 Swapper: {master_telegram_id or '—'}
 👤 Date Creator: {client}
 👤 Mate: {contact_text or '—'}
@@ -478,7 +480,7 @@ async def ensure_dispute_channel_async():
 
             cur.execute(
                 """
-                SELECT id, client_username, client_telegram_id, contact_text,
+                SELECT id, profile_name, client_username, client_telegram_id, contact_text,
                        master_telegram_id, dispute_comment, dispute_blacklisted,
                        created_at, dispute_opened_at,
                        dispute_history.actor_telegram_id,
@@ -531,7 +533,7 @@ async def send_dispute_to_channel_async(order_id):
     try:
         cur.execute(
             """
-            SELECT id, client_username, client_telegram_id, contact_text,
+            SELECT id, profile_name, client_username, client_telegram_id, contact_text,
                    master_telegram_id, dispute_comment, dispute_blacklisted,
                    created_at, dispute_opened_at,
                    dispute_history.actor_telegram_id,
