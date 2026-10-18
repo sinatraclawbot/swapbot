@@ -241,6 +241,14 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS cycle_progress_likes (
+                telegram_id BIGINT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS date_creator_wallets (
                 telegram_id BIGINT PRIMARY KEY,
                 available_balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
@@ -874,6 +882,80 @@ def send_cycle_progress_button(chat_id: int):
         "⚡ Follow the shared Value target for the current 8→8 cycle:",
         reply_markup=keyboard,
     )
+
+
+def broadcast_cycle_progress_invitation():
+    """Send the launch invitation once; invoked only after explicit confirmation."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key='cycle_progress_broadcast_v1'"
+        )
+        if cur.fetchone():
+            log("CYCLE PROGRESS BROADCAST", "already completed")
+            return
+        cur.execute(
+            """
+            SELECT telegram_id FROM masters WHERE is_active = TRUE
+            UNION
+            SELECT client_telegram_id FROM orders WHERE client_telegram_id IS NOT NULL
+            UNION
+            SELECT telegram_id FROM date_creator_wallets
+            """
+        )
+        recipient_ids = {int(row[0]) for row in cur.fetchall() if row[0]}
+        recipient_ids.update(FULL_ADMIN_IDS)
+    finally:
+        cur.close()
+        conn.close()
+
+    sent = 0
+    failed = 0
+    for user_id in sorted(recipient_ids):
+        try:
+            access_token = create_webapp_access_token(user_id, 7 * 24 * 60 * 60)
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(
+                InlineKeyboardButton(
+                    "🎯 Check Cycle Progress",
+                    web_app=WebAppInfo(
+                        url=(
+                            f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress"
+                            f"?token={access_token}"
+                        )
+                    ),
+                )
+            )
+            bot.send_message(
+                user_id,
+                "🚀 We made something cool!\n\n"
+                "Open the new Cycle Progress to follow our shared 8→8 Value target "
+                "live. If you like it, tap ❤️ Like inside the Mini App!",
+                reply_markup=keyboard,
+            )
+            sent += 1
+        except Exception as error:
+            failed += 1
+            log("CYCLE PROGRESS BROADCAST USER ERROR", user_id, repr(error))
+        time.sleep(0.06)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES ('cycle_progress_broadcast_v1', %s)
+            ON CONFLICT (setting_key) DO NOTHING
+            """,
+            (json.dumps({"sent": sent, "failed": failed, "at": datetime.now(BOT_TIMEZONE).isoformat()}),),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log("CYCLE PROGRESS BROADCAST COMPLETE", f"sent={sent}", f"failed={failed}")
 
 
 def order_group_keyboard(order_id: int):
@@ -4412,13 +4494,15 @@ def cycle_progress_page():
 </style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Calculating the cycle…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><section class="hero"><div class="eyebrow">⚡ Live global target</div><h1>Cycle Progress</h1><div id="cycle" class="cycle"></div></section><div class="ring-wrap"><div class="pulse"></div><svg class="ring" viewBox="0 0 250 250" aria-label="Cycle completion"><defs><linearGradient id="gradient"><stop offset="0%" stop-color="#7b61ff"/><stop offset="55%" stop-color="#23d5ff"/><stop offset="100%" stop-color="#56f39a"/></linearGradient></defs><circle class="track" cx="125" cy="125" r="110"/><circle id="ring" class="progress" cx="125" cy="125" r="110"/></svg><div class="ring-core"><div id="percent" class="percent">0%</div><div class="label">TARGET COMPLETE</div></div></div><div class="money"><strong id="current">0 USDT</strong> <span>/ <span id="target">0 USDT</span></span></div><div class="bar"><i id="bar"></i></div><div class="grid"><div class="card"><b id="remaining">—</b><small>USDT remaining</small></div><div class="card"><b id="values">—</b><small>confirmed Value Dates</small></div><div class="card wide"><div><b id="days">—</b><small>time left in cycle</small></div><div id="countdown" class="countdown">—</div></div><div class="card wide"><div><b id="pace">—</b><small id="paceNote">schedule status</small></div><div class="countdown"><b id="daily">—</b><small>needed per day</small></div></div></div><div id="status" class="status"></div><p class="info">The schedule assumes the target is completed evenly throughout the 8→8 cycle. Data updates after every confirmed Value.</p></main></div>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearchParams(location.search).get('token')||'';const $=id=>document.getElementById(id);function money(v){return new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v)+' USDT'}function post(){const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);return fetch('/api/cycle-progress',{method:'POST',body:form}).then(async r=>{const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`Request failed (${r.status})`);return data})}function tick(end){const render=()=>{const s=Math.max(0,Math.floor((new Date(end)-Date.now())/1000)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);$('days').textContent=d+' days';$('countdown').textContent=`${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m`};render();setInterval(render,30000)}post().then(data=>{$('loading').classList.add('hidden');$('content').classList.remove('hidden');$('cycle').textContent=data.cycle_label;$('current').textContent=money(data.current_value);$('target').textContent=data.target_set?money(data.target_value):'Not set';$('remaining').textContent=data.target_set?new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(data.remaining_value):'—';$('values').textContent=data.value_dates;$('pace').textContent=data.target_set?`${data.pace_ahead?'🟢 Ahead':'🔴 Behind'} ${money(Math.abs(data.pace_difference))}`:'—';$('paceNote').textContent=data.target_set?`Expected now: ${money(data.expected_value)} (${data.expected_percent}%)`:'schedule status';$('daily').textContent=data.target_set?money(data.required_daily_value):'—';const visual=Math.min(100,Math.max(0,data.percent));requestAnimationFrame(()=>{ $('ring').style.strokeDashoffset=691.15*(1-visual/100);$('bar').style.width=visual+'%';let n=0;const timer=setInterval(()=>{n=Math.min(data.percent,n+Math.max(.3,data.percent/45));$('percent').textContent=n.toFixed(n<10?1:0)+'%';if(n>=data.percent)clearInterval(timer)},24)});$('status').textContent=data.status_text;tick(data.cycle_end);for(let i=0;i<12;i++){const s=document.createElement('i');s.className='spark';s.style.left=(Math.random()*100)+'vw';s.style.top=(15+Math.random()*75)+'vh';s.style.animationDelay=(Math.random()*4)+'s';document.body.appendChild(s)}}).catch(e=>{$('loading').classList.add('hidden');$('error').classList.remove('hidden');$('error').textContent=e.message});
+</script><script>
+(async()=>{try{const data=await post(),button=document.createElement('button');button.type='button';button.id='likeButton';button.textContent=`${data.liked?'❤️':'🤍'} Like · ${data.like_count}`;Object.assign(button.style,{width:'100%',marginTop:'12px',padding:'15px',border:'0',borderRadius:'17px',font:'inherit',fontSize:'17px',fontWeight:'800',color:'var(--tg-theme-button-text-color,#fff)',background:'linear-gradient(135deg,#ff4778,#8b5cff)',boxShadow:'0 10px 25px rgba(255,71,120,.24)'});$('status').insertAdjacentElement('afterend',button);button.addEventListener('click',async()=>{button.disabled=true;const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);try{const response=await fetch('/api/cycle-progress/like',{method:'POST',body:form}),result=await response.json();if(!response.ok)throw new Error(result.error||'Could not save your like');button.textContent=`❤️ Liked · ${result.like_count}`;button.animate([{transform:'scale(1)'},{transform:'scale(1.08)'},{transform:'scale(1)'}],{duration:380})}catch(error){button.disabled=false;tg.showAlert(error.message)}})}catch(_){}})();
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
 
 @app.route("/api/cycle-progress", methods=["POST"])
 def cycle_progress_api():
     try:
-        verify_webapp_request(request.form)
+        user_id, _ = verify_webapp_request(request.form)
         cycle_start, cycle_end = date_creator_cycle_bounds()
         conn = get_conn()
         cur = conn.cursor()
@@ -4452,6 +4536,13 @@ def cycle_progress_api():
                 """
             )
             target_row = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM cycle_progress_likes")
+            like_count = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT EXISTS(SELECT 1 FROM cycle_progress_likes WHERE telegram_id=%s)",
+                (user_id,),
+            )
+            liked = bool(cur.fetchone()[0])
         finally:
             cur.close()
             conn.close()
@@ -4512,6 +4603,8 @@ def cycle_progress_api():
             pace_ahead=pace_difference >= 0,
             required_daily_value=float(required_daily_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
             value_dates=int(value_dates or 0),
+            like_count=like_count,
+            liked=liked,
             target_set=target_set,
             status_text=status_text,
         )
@@ -4520,6 +4613,38 @@ def cycle_progress_api():
     except Exception as error:
         log("CYCLE PROGRESS API ERROR", repr(error))
         return jsonify(error="Could not load cycle progress"), 500
+
+
+@app.route("/api/cycle-progress/like", methods=["POST"])
+def cycle_progress_like_api():
+    try:
+        user_id, _ = verify_webapp_request(request.form)
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO cycle_progress_likes (telegram_id)
+                VALUES (%s)
+                ON CONFLICT (telegram_id) DO NOTHING
+                """,
+                (user_id,),
+            )
+            cur.execute("SELECT COUNT(*) FROM cycle_progress_likes")
+            like_count = int(cur.fetchone()[0] or 0)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+            conn.close()
+        return jsonify(liked=True, like_count=like_count)
+    except ValueError as error:
+        return jsonify(error=str(error)), 401
+    except Exception as error:
+        log("CYCLE PROGRESS LIKE ERROR", repr(error))
+        return jsonify(error="Could not save your like"), 500
 
 
 @app.route("/monthly-leads", methods=["GET"])
