@@ -5910,6 +5910,7 @@ except Exception as e:
     log("REMOVE SWAPPER 8649754773 ERROR", repr(e))
     notify_admin(f"❌ REMOVE SWAPPER 8649754773 ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
+threading.Thread(target=broadcast_cycle_progress_invitation, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
 threading.Thread(target=date_creator_reward_worker, daemon=True).start()
