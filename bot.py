@@ -1648,6 +1648,71 @@ def get_id(message):
         log("ID ERROR", repr(e))
 
 
+@bot.message_handler(commands=["users"])
+def registered_users_list(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            WITH known_users AS (
+                SELECT telegram_id, NULL::TEXT AS username, 'Swapper'::TEXT AS role
+                FROM masters
+                UNION ALL
+                SELECT client_telegram_id, NULLIF(client_username, ''), 'Date Creator'
+                FROM orders
+                WHERE client_telegram_id IS NOT NULL
+                UNION ALL
+                SELECT telegram_id, NULL::TEXT, 'Date Creator'
+                FROM date_creator_wallets
+            )
+            SELECT telegram_id,
+                   MAX(username) FILTER (WHERE username IS NOT NULL) AS username,
+                   STRING_AGG(DISTINCT role, ' + ' ORDER BY role) AS roles
+            FROM known_users
+            WHERE telegram_id IS NOT NULL
+            GROUP BY telegram_id
+            ORDER BY telegram_id
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    users = {
+        int(telegram_id): {"username": username, "roles": roles}
+        for telegram_id, username, roles in rows
+    }
+    for admin_id in FULL_ADMIN_IDS:
+        entry = users.setdefault(int(admin_id), {"username": None, "roles": ""})
+        role_set = {role.strip() for role in entry["roles"].split("+") if role.strip()}
+        role_set.add("Admin")
+        entry["roles"] = " + ".join(sorted(role_set))
+
+    lines = [f"👥 Registered users: {len(users)}", ""]
+    for index, (telegram_id, data) in enumerate(sorted(users.items()), 1):
+        username = f"@{data['username'].lstrip('@')}" if data["username"] else "—"
+        lines.append(f"{index}. {telegram_id} · {username} · {data['roles']}")
+
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > 3800:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for chunk in chunks:
+        bot.send_message(message.chat.id, chunk)
+
+
 @bot.message_handler(commands=["balance"])
 @bot.message_handler(func=lambda message: message.text == "Wallet")
 def get_balance(message):
