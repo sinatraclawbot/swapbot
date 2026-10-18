@@ -837,6 +837,14 @@ def main_menu(user_id=None):
         )
     )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
+    markup.add(
+        KeyboardButton(
+            "🎯 Cycle Progress",
+            web_app=WebAppInfo(
+                url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress?token={persona_token}"
+            ),
+        )
+    )
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
         markup.add(KeyboardButton("Admin Panel"))
@@ -4361,6 +4369,103 @@ def finalize_dispute(call):
     )
     dispute_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
+
+
+@app.route("/cycle-progress", methods=["GET"])
+def cycle_progress_page():
+    return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cycle Progress</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{color-scheme:light dark;--accent:var(--tg-theme-button-color,#6c63ff);--text:var(--tg-theme-text-color,#f7f7fb);--hint:var(--tg-theme-hint-color,#a6a7b7);--card:var(--tg-theme-secondary-bg-color,#171925);--bg:var(--tg-theme-bg-color,#0d0e16)}*{box-sizing:border-box}body{min-height:100vh;margin:0;padding:18px 16px calc(28px + env(safe-area-inset-bottom));overflow-x:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at 20% 0%,color-mix(in srgb,var(--accent) 27%,transparent),transparent 35%),radial-gradient(circle at 100% 35%,rgba(41,203,255,.16),transparent 38%),var(--bg)}.wrap{width:min(100%,480px);margin:auto}.hero{text-align:center}.eyebrow{display:inline-flex;gap:7px;align-items:center;padding:7px 12px;border:1px solid color-mix(in srgb,var(--accent) 38%,transparent);border-radius:999px;color:var(--hint);background:color-mix(in srgb,var(--card) 80%,transparent);font-size:12px;font-weight:750;letter-spacing:.08em;text-transform:uppercase}.hero h1{margin:13px 0 5px;font-size:27px;letter-spacing:-.04em}.cycle{color:var(--hint);font-size:14px}.ring-wrap{position:relative;width:270px;height:270px;margin:22px auto 18px;filter:drop-shadow(0 22px 35px color-mix(in srgb,var(--accent) 25%,transparent))}.ring{width:100%;height:100%;transform:rotate(-90deg)}.track,.progress{fill:none;stroke-width:15}.track{stroke:color-mix(in srgb,var(--hint) 17%,transparent)}.progress{stroke:url(#gradient);stroke-linecap:round;stroke-dasharray:691.15;stroke-dashoffset:691.15;transition:stroke-dashoffset 1.35s cubic-bezier(.2,.85,.25,1)}.ring-core{position:absolute;inset:34px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid color-mix(in srgb,var(--accent) 24%,transparent);border-radius:50%;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 92%,white 4%),color-mix(in srgb,var(--bg) 94%,black));box-shadow:inset 0 0 34px color-mix(in srgb,var(--accent) 12%,transparent)}.percent{font-size:48px;font-weight:850;line-height:1;letter-spacing:-.06em}.label{margin-top:8px;color:var(--hint);font-size:13px;font-weight:650}.pulse{position:absolute;inset:-5px;border:1px solid color-mix(in srgb,var(--accent) 28%,transparent);border-radius:50%;animation:pulse 2.5s ease-out infinite}@keyframes pulse{0%{transform:scale(.94);opacity:.7}75%,100%{transform:scale(1.08);opacity:0}}.money{margin:0 0 16px;text-align:center;font-size:19px;font-weight:800}.money span{color:var(--hint);font-weight:600}.bar{height:10px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--hint) 16%,transparent)}.bar>i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7b61ff,#23d5ff,#56f39a);box-shadow:0 0 14px color-mix(in srgb,var(--accent) 55%,transparent);transition:width 1.25s cubic-bezier(.2,.85,.25,1)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.card{padding:15px;border:1px solid color-mix(in srgb,var(--hint) 13%,transparent);border-radius:18px;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 96%,white 2%),color-mix(in srgb,var(--card) 88%,transparent));box-shadow:0 10px 28px rgba(0,0,0,.12)}.card b{display:block;margin-bottom:6px;font-size:19px}.card small{color:var(--hint);font-size:12px}.wide{grid-column:1/-1;display:flex;justify-content:space-between;gap:10px;align-items:center}.countdown{text-align:right;font-variant-numeric:tabular-nums}.status{margin-top:12px;padding:14px 15px;border-radius:17px;text-align:center;font-weight:750;background:color-mix(in srgb,var(--accent) 14%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 26%,transparent)}.info{margin:13px 5px 0;color:var(--hint);font-size:12px;line-height:1.5;text-align:center}.loading,.error{padding:70px 18px;text-align:center}.spinner{width:44px;height:44px;margin:0 auto 16px;border:4px solid color-mix(in srgb,var(--hint) 20%,transparent);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.error{color:#ff7676}.hidden{display:none}.spark{position:fixed;z-index:-1;width:5px;height:5px;border-radius:50%;background:#56f39a;animation:float 5s ease-in-out infinite}@keyframes float{50%{transform:translateY(-28px) scale(1.5);opacity:.35}}
+</style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Calculating the cycle…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><section class="hero"><div class="eyebrow">⚡ Live global target</div><h1>Cycle Progress</h1><div id="cycle" class="cycle"></div></section><div class="ring-wrap"><div class="pulse"></div><svg class="ring" viewBox="0 0 250 250" aria-label="Cycle completion"><defs><linearGradient id="gradient"><stop offset="0%" stop-color="#7b61ff"/><stop offset="55%" stop-color="#23d5ff"/><stop offset="100%" stop-color="#56f39a"/></linearGradient></defs><circle class="track" cx="125" cy="125" r="110"/><circle id="ring" class="progress" cx="125" cy="125" r="110"/></svg><div class="ring-core"><div id="percent" class="percent">0%</div><div class="label">TARGET COMPLETE</div></div></div><div class="money"><strong id="current">0 USDT</strong> <span>/ <span id="target">0 USDT</span></span></div><div class="bar"><i id="bar"></i></div><div class="grid"><div class="card"><b id="remaining">—</b><small>USDT remaining</small></div><div class="card"><b id="values">—</b><small>confirmed Value Dates</small></div><div class="card wide"><div><b id="days">—</b><small>time left in cycle</small></div><div id="countdown" class="countdown">—</div></div></div><div id="status" class="status"></div><p class="info">This is one shared target for all users. It updates automatically after every confirmed Value.</p></main></div>
+<script>
+const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearchParams(location.search).get('token')||'';const $=id=>document.getElementById(id);function money(v){return new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v)+' USDT'}function post(){const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);return fetch('/api/cycle-progress',{method:'POST',body:form}).then(async r=>{const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`Request failed (${r.status})`);return data})}function tick(end){const render=()=>{const s=Math.max(0,Math.floor((new Date(end)-Date.now())/1000)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);$('days').textContent=d+' days';$('countdown').textContent=`${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m`};render();setInterval(render,30000)}post().then(data=>{$('loading').classList.add('hidden');$('content').classList.remove('hidden');$('cycle').textContent=data.cycle_label;$('current').textContent=money(data.current_value);$('target').textContent=data.target_set?money(data.target_value):'Not set';$('remaining').textContent=data.target_set?new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(data.remaining_value):'—';$('values').textContent=data.value_dates;const visual=Math.min(100,Math.max(0,data.percent));requestAnimationFrame(()=>{ $('ring').style.strokeDashoffset=691.15*(1-visual/100);$('bar').style.width=visual+'%';let n=0;const timer=setInterval(()=>{n=Math.min(data.percent,n+Math.max(.3,data.percent/45));$('percent').textContent=n.toFixed(n<10?1:0)+'%';if(n>=data.percent)clearInterval(timer)},24)});$('status').textContent=data.status_text;tick(data.cycle_end);for(let i=0;i<12;i++){const s=document.createElement('i');s.className='spark';s.style.left=(Math.random()*100)+'vw';s.style.top=(15+Math.random()*75)+'vh';s.style.animationDelay=(Math.random()*4)+'s';document.body.appendChild(s)}}).catch(e=>{$('loading').classList.add('hidden');$('error').classList.remove('hidden');$('error').textContent=e.message});
+</script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
+
+
+@app.route("/api/cycle-progress", methods=["POST"])
+def cycle_progress_api():
+    try:
+        verify_webapp_request(request.form)
+        cycle_start, cycle_end = date_creator_cycle_bounds()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(o.paid_amount), 0), COUNT(*)
+                FROM orders o
+                WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+                  AND COALESCE((
+                      SELECT MIN(h.created_at)
+                      FROM order_status_history h
+                      WHERE h.order_id=o.id
+                        AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                  ), o.created_at) >= %s
+                  AND COALESCE((
+                      SELECT MIN(h.created_at)
+                      FROM order_status_history h
+                      WHERE h.order_id=o.id
+                        AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+                  ), o.created_at) < %s
+                """,
+                (cycle_start, cycle_end),
+            )
+            current_value, value_dates = cur.fetchone()
+            cur.execute(
+                """
+                SELECT setting_value
+                FROM app_settings
+                WHERE setting_key='date_creator_cycle_limit_v1'
+                """
+            )
+            target_row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        current_value = Decimal(current_value or 0)
+        try:
+            target_value = Decimal(target_row[0]) if target_row else Decimal("0")
+        except (InvalidOperation, ValueError):
+            target_value = Decimal("0")
+        target_set = target_value > 0
+        percent = (
+            (current_value / target_value * Decimal("100"))
+            if target_set else Decimal("0")
+        )
+        remaining = max(Decimal("0"), target_value - current_value)
+        if not target_set:
+            status_text = "🎯 The cycle target has not been set yet"
+        elif current_value >= target_value:
+            status_text = "🏆 Target achieved — amazing teamwork!"
+        elif percent >= 75:
+            status_text = "🔥 Final stretch — the target is close!"
+        elif percent >= 40:
+            status_text = "⚡ Great pace — keep the momentum!"
+        else:
+            status_text = "🚀 The cycle is moving — every Value counts!"
+        return jsonify(
+            cycle_label=(
+                f"{cycle_start.strftime('%d %b %Y')} → "
+                f"{cycle_end.strftime('%d %b %Y')}"
+            ),
+            cycle_end=cycle_end.isoformat(),
+            current_value=float(current_value),
+            target_value=float(target_value),
+            remaining_value=float(remaining),
+            percent=float(percent.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+            value_dates=int(value_dates or 0),
+            target_set=target_set,
+            status_text=status_text,
+        )
+    except ValueError as error:
+        return jsonify(error=str(error)), 401
+    except Exception as error:
+        log("CYCLE PROGRESS API ERROR", repr(error))
+        return jsonify(error="Could not load cycle progress"), 500
 
 
 @app.route("/monthly-leads", methods=["GET"])
