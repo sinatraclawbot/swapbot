@@ -884,6 +884,28 @@ def send_cycle_progress_button(chat_id: int):
     )
 
 
+def cancel_pending_flow_for_command(message):
+    text = (getattr(message, "text", None) or "").strip()
+    if not text.startswith("/"):
+        return False
+    try:
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+    except Exception as error:
+        log("CLEAR STEP HANDLER ERROR", message.chat.id, repr(error))
+    command = text.split()[0].split("@", 1)[0].lower()
+    if command == "/start":
+        send_main_menu(message.chat.id, "Welcome. Tap 'Create Date'")
+        send_cycle_progress_button(message.chat.id)
+    elif command in ("/cancel", "/menu"):
+        send_main_menu(message.chat.id, "✅ Previous action cancelled.")
+    else:
+        send_main_menu(
+            message.chat.id,
+            "✅ Previous action cancelled. Send your command once more.",
+        )
+    return True
+
+
 def broadcast_cycle_progress_invitation():
     """Send the launch invitation once; invoked only after explicit confirmation."""
     conn = get_conn()
@@ -1909,6 +1931,8 @@ def send_date_creator_withdrawal_prompt(user_id, chat_id):
 
 
 def submit_date_creator_withdrawal(message):
+    if cancel_pending_flow_for_command(message):
+        return
     try:
         amount = Decimal(message.text.strip().replace(",", ".")).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -2454,6 +2478,8 @@ def start_date_creator_limit(call):
 
 
 def save_date_creator_limit(message):
+    if cancel_pending_flow_for_command(message):
+        return
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
@@ -2855,6 +2881,8 @@ def start_admin_edit_gift(call):
 
 
 def receive_admin_edit_gift_order(message):
+    if cancel_pending_flow_for_command(message):
+        return
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
@@ -2869,6 +2897,8 @@ def receive_admin_edit_gift_order(message):
 
 
 def receive_admin_edit_gift_amount(message, order_id):
+    if cancel_pending_flow_for_command(message):
+        return
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
@@ -2958,6 +2988,8 @@ def request_topup_amount(call):
 
 
 def receive_topup_amount(message, master_id):
+    if cancel_pending_flow_for_command(message):
+        return
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "Access denied")
         return
@@ -3131,6 +3163,8 @@ def select_date_type(call):
 
 
 def get_price(message):
+    if cancel_pending_flow_for_command(message):
+        return
     try:
         user_data[message.chat.id]["price"] = int(message.text)
     except ValueError:
@@ -3884,6 +3918,8 @@ def mark_paid(call):
 
 
 def save_paid_amount(message, order_id, source_group_id):
+    if cancel_pending_flow_for_command(message):
+        return
     try:
         raw_amount = message.text.strip().replace(",", ".")
         paid_amount = Decimal(raw_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -4255,6 +4291,8 @@ def start_dispute(call):
 
 
 def receive_dispute_comment(message, order_id, source_chat_id, source_message_id):
+    if cancel_pending_flow_for_command(message):
+        return
     comment = (message.text or "").strip()
     if len(comment) < 3:
         msg = bot.send_message(message.chat.id, "Please enter a meaningful comment (at least 3 characters):")
