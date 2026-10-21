@@ -658,6 +658,7 @@ async def create_group_async(order_id):
                 client_telegram_id,
                 contact_text,
                 incall_outcall,
+                address_text,
                 time_from,
                 time_to,
                 profile_name,
@@ -686,6 +687,7 @@ async def create_group_async(order_id):
             client_telegram_id,
             contact_text,
             format_type,
+            address_text,
             time_from,
             time_to,
             profile_name,
@@ -792,13 +794,14 @@ async def create_group_async(order_id):
             "PAID": "VALUE",
             "NO_GIFT": "NO_VALUE",
         }.get(payment_status, payment_status)
+        address_label = f"Address: {address_text}\n" if address_text else ""
         group_message = f"""📦 Date Request #{order_id}
 
 Value: {price} USDT
 Date Creator: {client_label}
 Mate: {contact_text}
 Format: {format_type}
-Time: {time_from}-{time_to}
+{address_label}Time: {time_from}-{time_to}
 Persona: {profile_name}
 Swapper ID: {master_label}
 

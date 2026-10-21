@@ -190,6 +190,7 @@ def ensure_balance_schema():
             ADD COLUMN IF NOT EXISTS normalized_contact_phone TEXT,
             ADD COLUMN IF NOT EXISTS is_returning_client BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS is_blacklisted_contact BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS address_text TEXT,
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'Telegram Bot',
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             """
@@ -2267,7 +2268,9 @@ def lead_card(order_id, viewer_id, admin_access=False):
                 o.dispute_blacklisted,
                 o.is_returning_client,
                 o.is_blacklisted_contact,
-                o.gift_client_will_return
+                o.gift_client_will_return,
+                o.incall_outcall,
+                o.address_text
             FROM orders o
             WHERE o.id = %s
               AND {ownership}
@@ -2296,7 +2299,7 @@ def lead_card(order_id, viewer_id, admin_access=False):
         lead_id, client_name, username, created_at, status, price, meeting_at,
         time_from, time_to, source, paid_amount, payment_status, master_id,
         dispute_comment, dispute_blacklisted, is_returning_client, is_blacklisted_contact,
-        gift_client_will_return,
+        gift_client_will_return, format_type, address_text,
     ) = row
     meeting = meeting_at.strftime("%Y-%m-%d %H:%M") if meeting_at else f"{time_from or '—'}–{time_to or '—'}"
     username_text = f"@{username}" if username else "—"
@@ -2351,6 +2354,8 @@ Final Value: {final_amount_text}
 Difference: {difference_text}
 Expected Date to return: {return_prediction}
 Meeting: {meeting}
+Format: {format_type or '—'}
+Address: {address_text or '—'}
 Source: {source or 'Telegram Bot'}
 🔄 Swapper ID: {master_id or '—'}
 {returning_details}
@@ -3249,6 +3254,12 @@ def receive_time_picker(message):
         if format_type not in ("Incall", "Outcall"):
             bot.send_message(message.chat.id, "❌ Select Incall or Outcall.")
             return
+        address_text = " ".join(str(payload.get("address", "")).split()).strip()
+        if format_type == "Outcall" and not 3 <= len(address_text) <= 300:
+            bot.send_message(message.chat.id, "❌ Enter a valid Outcall address.")
+            return
+        if format_type == "Incall":
+            address_text = ""
         persona = payload.get("persona")
         if persona not in load_active_persona_names():
             bot.send_message(message.chat.id, "❌ Select a Persona from the list.")
@@ -3258,6 +3269,7 @@ def receive_time_picker(message):
             "date_type": "—",
             "price": price,
             "format_type": format_type,
+            "address_text": address_text,
             "meeting_at": start_at,
             "time_from": time_choice_label(start_at, today),
             "time_to": time_choice_label(end_at, today),
@@ -3394,6 +3406,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 client_username,
                 contact_text,
                 incall_outcall,
+                address_text,
                 time_from,
                 time_to,
                 meeting_at,
@@ -3405,7 +3418,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 order_status,
                 payment_status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'NEW', 'NEW', 'NO_GIFT')
             RETURNING id
             """,
             (
@@ -3415,6 +3428,7 @@ def save_order(message, selected_persona=None, selected_user=None):
                 order_user.username,
                 data["contact_text"],
                 data["format_type"],
+                data.get("address_text") or None,
                 data["time_from"],
                 data["time_to"],
                 data["meeting_at"],
@@ -3466,6 +3480,10 @@ def save_order(message, selected_persona=None, selected_user=None):
 
         returning_label = "\n🔁 Returning Client: YES" if is_returning_client else ""
         blacklist_label = "\n🚫 Blacklisted contact: YES" if is_blacklisted_contact else ""
+        address_label = (
+            f"Address: {data['address_text']}\n"
+            if data.get("address_text") else ""
+        )
         notify_admin(f"""🆕 New Date Request #{order_id}
 
 Date Creator TG ID: {message.chat.id}
@@ -3473,7 +3491,7 @@ Date Creator username: @{order_user.username if order_user.username else 'none'}
 Mate: {data['contact_text']}
 Value: {data['price']} USDT
 Format: {data['format_type']}
-Time: {data['time_from']}-{data['time_to']}
+{address_label}Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
 {returning_label}
 {blacklist_label}
@@ -3505,12 +3523,13 @@ def send_order_to_masters(order_id, data):
 
     returning_label = "\n🔁 Returning Client" if data.get("is_returning_client") else ""
     blacklist_label = "\n🚫 Blacklisted contact" if data.get("is_blacklisted_contact") else ""
+    address_label = f"Address: {data['address_text']}\n" if data.get("address_text") else ""
     text = f"""🆕 New Date Request #{order_id}
 
 Mate: {data['contact_text']}
 Value: {data['price']} USDT
 Format: {data['format_type']}
-Time: {data['time_from']}-{data['time_to']}
+{address_label}Time: {data['time_from']}-{data['time_to']}
 Persona: {data['profile_name']}
 {returning_label}
 {blacklist_label}
@@ -5546,6 +5565,11 @@ def create_date_page():
       <label><input type="radio" name="format" value="Outcall"><span>🚕 Outcall</span></label>
     </div>
 
+    <div id="addressField" hidden>
+      <label class="field" for="address">Address</label>
+      <input id="address" type="text" maxlength="300" placeholder="Enter the Outcall address" autocomplete="street-address">
+    </div>
+
     <div class="times">
       <label class="field" for="start">Start time
         <input id="start" type="time" step="300">
@@ -5569,6 +5593,8 @@ def create_date_page():
     const personas = __PERSONA_OPTIONS__;
     const contactInput = document.getElementById('contact');
     const priceInput = document.getElementById('price');
+    const addressField = document.getElementById('addressField');
+    const addressInput = document.getElementById('address');
     const startInput = document.getElementById('start');
     const endInput = document.getElementById('end');
     const personaInput = document.getElementById('persona');
@@ -5583,6 +5609,14 @@ def create_date_page():
     syncColorScheme();
     tg.onEvent('themeChanged', syncColorScheme);
     personas.forEach(name => personaInput.add(new Option(name, name)));
+    function syncFormat() {
+      const isOutcall = document.querySelector('input[name="format"]:checked')?.value === 'Outcall';
+      addressField.hidden = !isOutcall;
+      addressInput.required = isOutcall;
+      if (!isOutcall) addressInput.value = '';
+    }
+    document.querySelectorAll('input[name="format"]').forEach(input => input.addEventListener('change', syncFormat));
+    syncFormat();
 
     function roundUpFiveMinutes(date) {
       const result = new Date(date.getTime());
@@ -5629,9 +5663,11 @@ def create_date_page():
       const contact = contactInput.value.trim();
       const price = priceInput.value.trim();
       const format = document.querySelector('input[name="format"]:checked')?.value;
+      const address = addressInput.value.trim();
       const persona = personaInput.value;
       if (contact.length < 3) { error.textContent = 'Enter the Mate.'; return; }
       if (!price || Number(price) <= 0) { error.textContent = 'Enter a positive Value amount.'; return; }
+      if (format === 'Outcall' && address.length < 3) { error.textContent = 'Enter the Outcall address.'; addressInput.focus(); return; }
       if (!startInput.value || !endInput.value) { error.textContent = 'Choose Start and End time.'; return; }
       if (!persona) { error.textContent = 'Select a Persona.'; return; }
       const start = selectedStart();
@@ -5647,7 +5683,7 @@ def create_date_page():
       }
       createButton.disabled = true;
       tg.sendData(JSON.stringify({
-        type: 'create_date', contact, price, format, persona,
+        type: 'create_date', contact, price, format, address, persona,
         start_wall: wallValue(start), end_wall: wallValue(end),
         start_ts: Math.floor(start.getTime() / 1000),
         end_ts: Math.floor(end.getTime() / 1000)
