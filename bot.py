@@ -1010,6 +1010,7 @@ def build_group_status_text(
     paid_amount=None,
     commission=None,
     master_balance=None,
+    creator_reward=None,
 ):
     payment_status_text = {
         "GIFT": "VALUE",
@@ -1021,6 +1022,7 @@ def build_group_status_text(
         payment_details = f"""
 🎁 Total Value: {paid_amount} USDT
 🔄 Swapper fee (30%): {commission} USDT
+📅 Date Creator fee (3%): {creator_reward['immediate_reward'] if creator_reward else 0} USDT
 💼 Swapper balance: {master_balance} USDT
 """
 
@@ -2702,27 +2704,106 @@ def show_admin_masters(call):
             FROM masters
             WHERE is_active = TRUE
             ORDER BY telegram_id
-            LIMIT 50
             """
         )
-        rows = cur.fetchall()
+        swapper_rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT telegram_id, available_balance
+            FROM date_creator_wallets
+            ORDER BY telegram_id
+            """
+        )
+        creator_rows = cur.fetchall()
     finally:
         cur.close()
         conn.close()
-    if not rows:
+    if not swapper_rows and not creator_rows:
         bot.send_message(call.message.chat.id, "💼 No Wallets found")
         bot.answer_callback_query(call.id)
         return
-    kb = InlineKeyboardMarkup(row_width=1)
-    for master_id, balance, active, online in rows:
+    buttons = []
+    for master_id, balance, active, online in swapper_rows:
         state = "🟢" if active and online else "⚪️"
-        kb.add(
+        buttons.append(
             InlineKeyboardButton(
-                f"{state} {master_id} · {format_money(balance)} USDT",
+                f"{state} 🔄 Swapper {master_id} · {format_money(balance)} USDT",
                 callback_data=f"adm_master_{master_id}",
             )
         )
-    bot.send_message(call.message.chat.id, "💼 Wallets:", reply_markup=kb)
+    for creator_id, available_balance in creator_rows:
+        buttons.append(
+            InlineKeyboardButton(
+                f"📅 Date Creator {creator_id} · "
+                f"{format_money(available_balance)} USDT",
+                callback_data=f"adm_creator_wallet_{creator_id}",
+            )
+        )
+    for offset in range(0, len(buttons), 80):
+        kb = InlineKeyboardMarkup(row_width=1)
+        for button in buttons[offset:offset + 80]:
+            kb.add(button)
+        title = "💼 All Wallets:" if offset == 0 else "💼 Wallets (continued):"
+        bot.send_message(call.message.chat.id, title, reply_markup=kb)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_creator_wallet_"))
+def show_admin_creator_wallet(call):
+    if not require_admin_callback(call):
+        return
+    creator_id = int(call.data.rsplit("_", 1)[1])
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                w.available_balance,
+                w.first_confirmed_value_at,
+                COALESCE(SUM(r.value_amount), 0),
+                COALESCE(SUM(r.immediate_reward), 0),
+                COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0),
+                COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0),
+                COUNT(r.order_id)
+            FROM date_creator_wallets w
+            LEFT JOIN date_creator_rewards r ON r.creator_telegram_id=w.telegram_id
+            WHERE w.telegram_id=%s
+            GROUP BY w.telegram_id, w.available_balance, w.first_confirmed_value_at
+            """,
+            (creator_id,),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0)
+            FROM date_creator_withdrawals
+            WHERE creator_telegram_id=%s AND status='PENDING'
+            """,
+            (creator_id,),
+        )
+        pending = cur.fetchone()[0]
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        bot.answer_callback_query(call.id, "Date Creator wallet not found")
+        return
+    available, started, total_value, immediate_total, cycle_frozen, loyalty_frozen, dates = row
+    started_text = (
+        started.astimezone(BOT_TIMEZONE).strftime("%Y-%m-%d") if started else "—"
+    )
+    bot.send_message(
+        call.message.chat.id,
+        f"📅 Date Creator Wallet {creator_id}\n\n"
+        f"✅ Available balance: {format_money(available)} USDT\n"
+        f"💸 Pending withdrawals: {format_money(pending)} USDT\n"
+        f"🎁 Confirmed Value: {format_money(total_value)} USDT ({dates} Dates)\n"
+        f"💰 Earned immediate fee (3%): {format_money(immediate_total)} USDT\n"
+        f"🧉 Frozen cycle bonus (1.5%): {format_money(cycle_frozen)} USDT\n"
+        f"⏳ Frozen 90-day reward (2%): {format_money(loyalty_frozen)} USDT\n"
+        f"🚀 Started: {started_text}",
+    )
     bot.answer_callback_query(call.id)
 
 
@@ -4056,6 +4137,10 @@ def save_paid_amount(message, order_id, source_group_id):
         order_id,
         order_status or "IN_CHAT",
         "GIFT",
+        paid_amount,
+        commission,
+        master_balance,
+        creator_reward,
     )
 
     send_and_pin_group_card(
@@ -4094,6 +4179,8 @@ def save_paid_amount(message, order_id, source_group_id):
         f"🎁 Date request #{order_id}: marked as VALUE\n"
         f"Value total: {paid_amount} USDT\n"
         f"🔄 Swapper fee (30%): {commission} USDT\n"
+        f"📅 Date Creator fee (3%): "
+        f"{creator_reward['immediate_reward'] if creator_reward else 0} USDT\n"
         f"💼 Swapper balance: {master_balance} USDT"
     )
     gift_channel_queue.put(order_id)

@@ -83,6 +83,9 @@ def gift_message(row):
         initial_price,
         paid_amount,
         commission_amount,
+        creator_immediate_reward,
+        creator_cycle_reward,
+        creator_loyalty_reward,
         created_at,
         gift_recorded_at,
         gift_actor_id,
@@ -100,6 +103,9 @@ def gift_message(row):
 🏷 Requested Value: {initial_price or 0} USDT
 🎁 Final Value: {paid_amount or 0} USDT
 💼 Swapper fee: {commission_amount or 0} USDT
+📅 Date Creator fee (3%): {creator_immediate_reward or 0} USDT
+🧉 Cycle bonus (1.5%, frozen): {creator_cycle_reward or 0} USDT
+⏳ 90-day reward (2%): {creator_loyalty_reward or 0} USDT
 👆 Value confirmed by: {gift_actor_name or '—'} (TG ID: {gift_actor_id or '—'})
 🕒 Confirmed: {recorded_text}"""
 
@@ -163,10 +169,13 @@ async def ensure_gift_channel_async():
                 """
                 SELECT o.id, o.profile_name, o.client_username, o.client_telegram_id,
                        o.contact_text, o.master_telegram_id, o.price, o.paid_amount,
-                       o.commission_amount, o.created_at,
+                       o.commission_amount,
+                       rewards.immediate_reward, rewards.cycle_reward,
+                       rewards.loyalty_reward, o.created_at,
                        gift_history.created_at, gift_history.actor_telegram_id,
                        gift_history.actor_name
                 FROM orders o
+                LEFT JOIN date_creator_rewards rewards ON rewards.order_id = o.id
                 LEFT JOIN LATERAL (
                     SELECT created_at, actor_telegram_id, actor_name
                     FROM order_status_history
@@ -215,10 +224,13 @@ async def send_gift_to_channel_async(order_id):
             """
             SELECT o.id, o.profile_name, o.client_username, o.client_telegram_id,
                    o.contact_text, o.master_telegram_id, o.price, o.paid_amount,
-                   o.commission_amount, o.created_at,
+                   o.commission_amount,
+                   rewards.immediate_reward, rewards.cycle_reward,
+                   rewards.loyalty_reward, o.created_at,
                    gift_history.created_at, gift_history.actor_telegram_id,
                    gift_history.actor_name
             FROM orders o
+            LEFT JOIN date_creator_rewards rewards ON rewards.order_id = o.id
             LEFT JOIN LATERAL (
                 SELECT created_at, actor_telegram_id, actor_name
                 FROM order_status_history
