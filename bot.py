@@ -875,7 +875,7 @@ def main_menu(user_id=None):
     if user_id is not None and is_cycle_participant(user_id):
         markup.add(
             KeyboardButton(
-                "🎯 Cycle Progress",
+                "🎯 Circle 1 Progress",
                 web_app=WebAppInfo(
                     url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress?token={persona_token}"
                 ),
@@ -901,7 +901,7 @@ def send_cycle_progress_button(chat_id: int):
         )
         bot.send_message(
             chat_id,
-            "🔒 This Cycle Progress is private. Create your own Circle or request access:",
+            "🔒 Circle 1 is private. Create your own Circle or request access:",
             reply_markup=keyboard,
         )
         return
@@ -909,7 +909,7 @@ def send_cycle_progress_button(chat_id: int):
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
         InlineKeyboardButton(
-            "🎯 Open Cycle Progress",
+            "🎯 Open Circle 1 Progress",
             web_app=WebAppInfo(
                 url=(
                     f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress"
@@ -920,7 +920,7 @@ def send_cycle_progress_button(chat_id: int):
     )
     bot.send_message(
         chat_id,
-        "⚡ Follow the shared Value target for the current 8→8 cycle:",
+        "⚡ Follow the shared Value target for Circle 1 (8→8):",
         reply_markup=keyboard,
     )
 
@@ -976,7 +976,7 @@ def submit_circle_creation_request(user, chat_id):
 @bot.message_handler(func=lambda message: message.text == "➕ Create Circle")
 def create_circle_request_message(message):
     if is_cycle_participant(message.from_user.id):
-        send_main_menu(message.chat.id, "You already have access to this Circle.")
+        send_main_menu(message.chat.id, "You already have access to Circle 1.")
         return
     submit_circle_creation_request(message.from_user, message.chat.id)
 
@@ -984,7 +984,7 @@ def create_circle_request_message(message):
 @bot.callback_query_handler(func=lambda call: call.data == "create_circle_request")
 def create_circle_request_callback(call):
     if is_cycle_participant(call.from_user.id):
-        bot.answer_callback_query(call.id, "You already have access")
+        bot.answer_callback_query(call.id, "You already have access to Circle 1")
         send_cycle_progress_button(call.message.chat.id)
         return
     bot.answer_callback_query(call.id, "Request sent")
@@ -2396,6 +2396,135 @@ def issue_analytics_api_access(message):
     )
 
 
+def circle_1_member_report_chunks():
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                p.telegram_id,
+                p.source,
+                p.joined_at,
+                (m.telegram_id IS NOT NULL) AS is_swapper,
+                (w.telegram_id IS NOT NULL OR creator.client_telegram_id IS NOT NULL)
+                    AS is_creator,
+                creator.client_username
+            FROM cycle_participants p
+            LEFT JOIN masters m
+              ON m.telegram_id=p.telegram_id AND m.is_active=TRUE
+            LEFT JOIN date_creator_wallets w ON w.telegram_id=p.telegram_id
+            LEFT JOIN LATERAL (
+                SELECT o.client_telegram_id, o.client_username
+                FROM orders o
+                WHERE o.client_telegram_id=p.telegram_id
+                ORDER BY o.created_at DESC, o.id DESC
+                LIMIT 1
+            ) creator ON TRUE
+            WHERE p.cycle_start=%s AND p.cycle_end=%s AND p.is_active=TRUE
+            ORDER BY p.joined_at, p.telegram_id
+            """,
+            (cycle_start, cycle_end),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    lines = [
+        f"⭕ <b>Circle 1 members</b>",
+        f"📅 {cycle_start.strftime('%d %b %Y')} → {cycle_end.strftime('%d %b %Y')}",
+        f"👥 Total: <b>{len(rows)}</b>",
+        "",
+    ]
+    for index, (telegram_id, source, joined_at, is_swapper, is_creator, username) in enumerate(rows, 1):
+        roles = []
+        if is_admin(int(telegram_id)):
+            roles.append("Admin")
+        if is_swapper:
+            roles.append("Swapper")
+        if is_creator:
+            roles.append("Date Creator")
+        if not roles:
+            roles.append("Member")
+        user_label = f"@{username}" if username else "no username"
+        lines.append(
+            f"{index}. <code>{telegram_id}</code> · {user_label}\n"
+            f"   {' + '.join(roles)} · {source}"
+        )
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > 3500:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def send_circle_1_members(chat_id):
+    for chunk in circle_1_member_report_chunks():
+        bot.send_message(chat_id, chunk, parse_mode="HTML")
+
+
+@bot.message_handler(commands=["circle_members"])
+def circle_1_members_command(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    send_circle_1_members(message.chat.id)
+
+
+def broadcast_circle_1_members_once():
+    cycle_start, _ = date_creator_cycle_bounds()
+    setting_key = f"circle_1_members_sent_{cycle_start.date().isoformat()}_v1"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM app_settings WHERE setting_key=%s", (setting_key,))
+        if cur.fetchone():
+            return
+    finally:
+        cur.close()
+        conn.close()
+    sent = 0
+    failed = 0
+    for admin_id in sorted(FULL_ADMIN_IDS):
+        try:
+            send_circle_1_members(admin_id)
+            sent += 1
+        except Exception as error:
+            failed += 1
+            log("CIRCLE 1 MEMBERS SEND ERROR", admin_id, repr(error))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            ON CONFLICT (setting_key) DO NOTHING
+            """,
+            (
+                setting_key,
+                json.dumps({
+                    "sent": sent,
+                    "failed": failed,
+                    "at": datetime.now(BOT_TIMEZONE).isoformat(),
+                }),
+            ),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log("CIRCLE 1 MEMBERS SENT", f"sent={sent}", f"failed={failed}")
+
+
 @bot.message_handler(commands=["balance"])
 @bot.message_handler(func=lambda message: message.text == "Wallet")
 def get_balance(message):
@@ -3108,6 +3237,7 @@ def admin_panel_keyboard(user_id):
     kb.add(InlineKeyboardButton("✏️ Edit Value", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
     kb.add(InlineKeyboardButton("🎯 Date Creator Limit", callback_data="adm_creator_limit"))
+    kb.add(InlineKeyboardButton("⭕ Circle 1 Members", callback_data="adm_circle_members"))
     return kb
 
 
@@ -3116,6 +3246,14 @@ def require_admin_callback(call):
         return True
     bot.answer_callback_query(call.id, "Access denied")
     return False
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_circle_members")
+def show_circle_1_members_callback(call):
+    if not require_admin_callback(call):
+        return
+    bot.answer_callback_query(call.id, "Loading Circle 1 members")
+    send_circle_1_members(call.message.chat.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_creator_limit")
@@ -5690,10 +5828,10 @@ def cycle_progress_page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Cycle Progress</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>Circle 1 Progress</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{color-scheme:light dark;--accent:var(--tg-theme-button-color,#6c63ff);--text:var(--tg-theme-text-color,#f7f7fb);--hint:var(--tg-theme-hint-color,#a6a7b7);--card:var(--tg-theme-secondary-bg-color,#171925);--bg:var(--tg-theme-bg-color,#0d0e16)}*{box-sizing:border-box}body{min-height:100vh;margin:0;padding:18px 16px calc(28px + env(safe-area-inset-bottom));overflow-x:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at 20% 0%,color-mix(in srgb,var(--accent) 27%,transparent),transparent 35%),radial-gradient(circle at 100% 35%,rgba(41,203,255,.16),transparent 38%),var(--bg)}.wrap{width:min(100%,480px);margin:auto}.hero{text-align:center}.eyebrow{display:inline-flex;gap:7px;align-items:center;padding:7px 12px;border:1px solid color-mix(in srgb,var(--accent) 38%,transparent);border-radius:999px;color:var(--hint);background:color-mix(in srgb,var(--card) 80%,transparent);font-size:12px;font-weight:750;letter-spacing:.08em;text-transform:uppercase}.hero h1{margin:13px 0 5px;font-size:27px;letter-spacing:-.04em}.cycle{color:var(--hint);font-size:14px}.ring-wrap{position:relative;width:270px;height:270px;margin:22px auto 18px;filter:drop-shadow(0 22px 35px color-mix(in srgb,var(--accent) 25%,transparent))}.ring{width:100%;height:100%;transform:rotate(-90deg)}.track,.progress{fill:none;stroke-width:15}.track{stroke:color-mix(in srgb,var(--hint) 17%,transparent)}.progress{stroke:url(#gradient);stroke-linecap:round;stroke-dasharray:691.15;stroke-dashoffset:691.15;transition:stroke-dashoffset 1.35s cubic-bezier(.2,.85,.25,1)}.ring-core{position:absolute;inset:34px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid color-mix(in srgb,var(--accent) 24%,transparent);border-radius:50%;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 92%,white 4%),color-mix(in srgb,var(--bg) 94%,black));box-shadow:inset 0 0 34px color-mix(in srgb,var(--accent) 12%,transparent)}.percent{font-size:48px;font-weight:850;line-height:1;letter-spacing:-.06em}.label{margin-top:8px;color:var(--hint);font-size:13px;font-weight:650}.pulse{position:absolute;inset:-5px;border:1px solid color-mix(in srgb,var(--accent) 28%,transparent);border-radius:50%;animation:pulse 2.5s ease-out infinite}@keyframes pulse{0%{transform:scale(.94);opacity:.7}75%,100%{transform:scale(1.08);opacity:0}}.money{margin:0 0 16px;text-align:center;font-size:19px;font-weight:800}.money span{color:var(--hint);font-weight:600}.bar{height:10px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--hint) 16%,transparent)}.bar>i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7b61ff,#23d5ff,#56f39a);box-shadow:0 0 14px color-mix(in srgb,var(--accent) 55%,transparent);transition:width 1.25s cubic-bezier(.2,.85,.25,1)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.card{padding:15px;border:1px solid color-mix(in srgb,var(--hint) 13%,transparent);border-radius:18px;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 96%,white 2%),color-mix(in srgb,var(--card) 88%,transparent));box-shadow:0 10px 28px rgba(0,0,0,.12)}.card b{display:block;margin-bottom:6px;font-size:19px}.card small{color:var(--hint);font-size:12px}.wide{grid-column:1/-1;display:flex;justify-content:space-between;gap:10px;align-items:center}.countdown{text-align:right;font-variant-numeric:tabular-nums}.status{margin-top:12px;padding:14px 15px;border-radius:17px;text-align:center;font-weight:750;background:color-mix(in srgb,var(--accent) 14%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 26%,transparent)}.info{margin:13px 5px 0;color:var(--hint);font-size:12px;line-height:1.5;text-align:center}.loading,.error{padding:70px 18px;text-align:center}.spinner{width:44px;height:44px;margin:0 auto 16px;border:4px solid color-mix(in srgb,var(--hint) 20%,transparent);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.error{color:#ff7676}.hidden{display:none}.spark{position:fixed;z-index:-1;width:5px;height:5px;border-radius:50%;background:#56f39a;animation:float 5s ease-in-out infinite}@keyframes float{50%{transform:translateY(-28px) scale(1.5);opacity:.35}}
-</style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Calculating the cycle…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><section class="hero"><div class="eyebrow">⚡ Live global target</div><h1>Cycle Progress</h1><div id="cycle" class="cycle"></div></section><div class="ring-wrap"><div class="pulse"></div><svg class="ring" viewBox="0 0 250 250" aria-label="Cycle completion"><defs><linearGradient id="gradient"><stop offset="0%" stop-color="#7b61ff"/><stop offset="55%" stop-color="#23d5ff"/><stop offset="100%" stop-color="#56f39a"/></linearGradient></defs><circle class="track" cx="125" cy="125" r="110"/><circle id="ring" class="progress" cx="125" cy="125" r="110"/></svg><div class="ring-core"><div id="percent" class="percent">0%</div><div class="label">TARGET COMPLETE</div></div></div><div class="money"><strong id="current">0 USDT</strong> <span>/ <span id="target">0 USDT</span></span></div><div class="bar"><i id="bar"></i></div><div class="grid"><div class="card"><b id="remaining">—</b><small>USDT remaining</small></div><div class="card"><b id="values">—</b><small>confirmed Value Dates</small></div><div class="card wide"><div><b id="days">—</b><small>time left in cycle</small></div><div id="countdown" class="countdown">—</div></div><div class="card wide"><div><b id="pace">—</b><small id="paceNote">schedule status</small></div><div class="countdown"><b id="daily">—</b><small>needed per day</small></div></div></div><div id="status" class="status"></div><p class="info">The schedule assumes the target is completed evenly throughout the 8→8 cycle. Data updates after every confirmed Value.</p></main></div>
+</style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Calculating Circle 1…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><section class="hero"><div class="eyebrow">⚡ Circle 1 · live target</div><h1>Circle 1 Progress</h1><div id="cycle" class="cycle"></div></section><div class="ring-wrap"><div class="pulse"></div><svg class="ring" viewBox="0 0 250 250" aria-label="Circle 1 completion"><defs><linearGradient id="gradient"><stop offset="0%" stop-color="#7b61ff"/><stop offset="55%" stop-color="#23d5ff"/><stop offset="100%" stop-color="#56f39a"/></linearGradient></defs><circle class="track" cx="125" cy="125" r="110"/><circle id="ring" class="progress" cx="125" cy="125" r="110"/></svg><div class="ring-core"><div id="percent" class="percent">0%</div><div class="label">TARGET COMPLETE</div></div></div><div class="money"><strong id="current">0 USDT</strong> <span>/ <span id="target">0 USDT</span></span></div><div class="bar"><i id="bar"></i></div><div class="grid"><div class="card"><b id="remaining">—</b><small>USDT remaining</small></div><div class="card"><b id="values">—</b><small>confirmed Value Dates</small></div><div class="card wide"><div><b id="days">—</b><small>time left in Circle 1</small></div><div id="countdown" class="countdown">—</div></div><div class="card wide"><div><b id="pace">—</b><small id="paceNote">schedule status</small></div><div class="countdown"><b id="daily">—</b><small>needed per day</small></div></div></div><div id="status" class="status"></div><p class="info">The schedule assumes the target is completed evenly throughout Circle 1 (8→8). Data updates after every confirmed Value.</p></main></div>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearchParams(location.search).get('token')||'';const $=id=>document.getElementById(id);function money(v){return new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v)+' USDT'}function post(){const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);return fetch('/api/cycle-progress',{method:'POST',body:form}).then(async r=>{const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`Request failed (${r.status})`);return data})}function tick(end){const render=()=>{const s=Math.max(0,Math.floor((new Date(end)-Date.now())/1000)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);$('days').textContent=d+' days';$('countdown').textContent=`${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m`};render();setInterval(render,30000)}post().then(data=>{$('loading').classList.add('hidden');$('content').classList.remove('hidden');$('cycle').textContent=data.cycle_label;$('current').textContent=money(data.current_value);$('target').textContent=data.target_set?money(data.target_value):'Not set';$('remaining').textContent=data.target_set?new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(data.remaining_value):'—';$('values').textContent=data.value_dates;$('pace').textContent=data.target_set?`${data.pace_ahead?'🟢 Ahead':'🔴 Behind'} ${money(Math.abs(data.pace_difference))}`:'—';$('paceNote').textContent=data.target_set?`Expected now: ${money(data.expected_value)} (${data.expected_percent}%)`:'schedule status';$('daily').textContent=data.target_set?money(data.required_daily_value):'—';const visual=Math.min(100,Math.max(0,data.percent));requestAnimationFrame(()=>{ $('ring').style.strokeDashoffset=691.15*(1-visual/100);$('bar').style.width=visual+'%';let n=0;const timer=setInterval(()=>{n=Math.min(data.percent,n+Math.max(.3,data.percent/45));$('percent').textContent=n.toFixed(n<10?1:0)+'%';if(n>=data.percent)clearInterval(timer)},24)});$('status').textContent=data.status_text;tick(data.cycle_end);for(let i=0;i<12;i++){const s=document.createElement('i');s.className='spark';s.style.left=(Math.random()*100)+'vw';s.style.top=(15+Math.random()*75)+'vh';s.style.animationDelay=(Math.random()*4)+'s';document.body.appendChild(s)}}).catch(e=>{$('loading').classList.add('hidden');$('error').classList.remove('hidden');$('error').textContent=e.message});
 </script><script>
@@ -5706,7 +5844,7 @@ def cycle_progress_api():
     try:
         user_id, _ = verify_webapp_request(request.form)
         if not is_cycle_participant(user_id):
-            return jsonify(error="This Cycle is private. Tap Create Circle in the bot menu."), 403
+            return jsonify(error="Circle 1 is private. Tap Create Circle in the bot menu."), 403
         cycle_start, cycle_end = date_creator_cycle_bounds()
         conn = get_conn()
         cur = conn.cursor()
@@ -5793,7 +5931,7 @@ def cycle_progress_api():
             status_text = "🚀 The cycle is moving — every Value counts!"
         return jsonify(
             cycle_label=(
-                f"{cycle_start.strftime('%d %b %Y')} → "
+                f"Circle 1 · {cycle_start.strftime('%d %b %Y')} → "
                 f"{cycle_end.strftime('%d %b %Y')}"
             ),
             cycle_end=cycle_end.isoformat(),
@@ -5824,7 +5962,7 @@ def cycle_progress_like_api():
     try:
         user_id, _ = verify_webapp_request(request.form)
         if not is_cycle_participant(user_id):
-            return jsonify(error="This Cycle is private"), 403
+            return jsonify(error="Circle 1 is private"), 403
         conn = get_conn()
         cur = conn.cursor()
         try:
@@ -7138,6 +7276,7 @@ except Exception as e:
     log("REMOVE SWAPPER 8649754773 ERROR", repr(e))
     notify_admin(f"❌ REMOVE SWAPPER 8649754773 ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
+threading.Thread(target=broadcast_circle_1_members_once, daemon=True).start()
 threading.Thread(target=broadcast_cycle_progress_invitation, daemon=True).start()
 threading.Thread(target=run_cycle_balance_sprint_broadcast, daemon=True).start()
 threading.Thread(target=run_swapper_admin_cycle_sprint_broadcast, daemon=True).start()
