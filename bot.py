@@ -919,6 +919,14 @@ def send_main_menu(chat_id: int, text: str):
     bot.send_message(chat_id, text, reply_markup=main_menu(chat_id))
 
 
+@bot.message_handler(func=lambda message: message.text in ("Statistics", "Lead History"))
+def replace_removed_menu_buttons(message):
+    send_main_menu(
+        message.chat.id,
+        "✅ Menu updated. Statistics and Lead History were removed.",
+    )
+
+
 def send_cycle_progress_button(chat_id: int):
     if not is_cycle_participant(chat_id):
         keyboard = InlineKeyboardMarkup()
@@ -2577,6 +2585,78 @@ def broadcast_circle_1_members_once():
     log("CIRCLE 1 MEMBERS SENT", f"sent={sent}", f"failed={failed}")
 
 
+def broadcast_simplified_menu_once():
+    """Replace Telegram's cached Reply Keyboard after the requested menu cleanup."""
+    setting_key = "simplified_menu_stats_history_removed_v1"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM app_settings WHERE setting_key=%s", (setting_key,))
+        if cur.fetchone():
+            return
+        cur.execute(
+            """
+            SELECT telegram_id FROM masters WHERE is_active=TRUE
+            UNION
+            SELECT client_telegram_id FROM orders WHERE client_telegram_id IS NOT NULL
+            UNION
+            SELECT telegram_id FROM date_creator_wallets
+            UNION
+            SELECT telegram_id FROM cycle_participants WHERE is_active=TRUE
+            """
+        )
+        recipient_ids = {int(row[0]) for row in cur.fetchall() if row[0]}
+        recipient_ids.update(FULL_ADMIN_IDS)
+    finally:
+        cur.close()
+        conn.close()
+    sent = 0
+    failed = 0
+    for user_id in sorted(recipient_ids):
+        try:
+            bot.send_message(
+                user_id,
+                "✨ Menu updated",
+                reply_markup=main_menu(user_id),
+            )
+            sent += 1
+        except Exception as error:
+            failed += 1
+            log("SIMPLIFIED MENU SEND ERROR", user_id, repr(error))
+        time.sleep(0.06)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            ON CONFLICT (setting_key) DO NOTHING
+            """,
+            (
+                setting_key,
+                json.dumps({
+                    "sent": sent,
+                    "failed": failed,
+                    "at": datetime.now(BOT_TIMEZONE).isoformat(),
+                }),
+            ),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log("SIMPLIFIED MENU BROADCAST COMPLETE", f"sent={sent}", f"failed={failed}")
+
+
+def run_simplified_menu_broadcast():
+    try:
+        broadcast_simplified_menu_once()
+    except Exception as error:
+        log("SIMPLIFIED MENU BROADCAST ERROR", repr(error))
+        notify_admin(f"❌ SIMPLIFIED MENU BROADCAST ERROR: {repr(error)}")
+
+
 @bot.message_handler(commands=["balance"])
 @bot.message_handler(func=lambda message: message.text in ("Wallet", "💼 Wallet"))
 def get_balance(message):
@@ -3059,7 +3139,6 @@ def list_master_balances(message):
 
 
 @bot.message_handler(commands=["stats"])
-@bot.message_handler(func=lambda message: message.text == "Statistics")
 def show_master_statistics(message):
     text = master_statistics_text(message.from_user.id, "all")
     bot.send_message(message.chat.id, text, reply_markup=period_keyboard("mstats"))
@@ -3209,7 +3288,6 @@ Status history:
 
 
 @bot.message_handler(commands=["leads"])
-@bot.message_handler(func=lambda message: message.text == "Lead History")
 def show_master_leads(message):
     conn = get_conn()
     cur = conn.cursor()
@@ -3312,24 +3390,12 @@ def show_circle_1_members_callback(call):
 def start_date_creator_limit(call):
     if not require_admin_callback(call):
         return
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "SELECT setting_value FROM app_settings WHERE setting_key='date_creator_cycle_limit_v1'"
-        )
-        row = cur.fetchone()
-    finally:
-        cur.close()
-        conn.close()
-    current = f"{format_money(row[0])} USDT" if row and Decimal(row[0]) > 0 else "Not set"
-    msg = bot.send_message(
-        call.from_user.id,
-        f"🎯 Current global Date Creator cycle limit: {current}\n\n"
-        "Enter the new total Value limit in USDT:",
+    bot.answer_callback_query(call.id, "This button was removed", show_alert=True)
+    bot.send_message(
+        call.message.chat.id,
+        "✅ Date Creator Limit was removed. Team Target is now built from Swappers' personal targets.",
+        reply_markup=admin_panel_keyboard(call.from_user.id),
     )
-    bot.register_next_step_handler(msg, save_date_creator_limit)
-    bot.answer_callback_query(call.id)
 
 
 def save_date_creator_limit(message):
@@ -7643,6 +7709,7 @@ except Exception as e:
     log("REMOVE SWAPPER 8649754773 ERROR", repr(e))
     notify_admin(f"❌ REMOVE SWAPPER 8649754773 ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
+threading.Thread(target=run_simplified_menu_broadcast, daemon=True).start()
 threading.Thread(target=broadcast_circle_1_members_once, daemon=True).start()
 threading.Thread(target=broadcast_cycle_progress_invitation, daemon=True).start()
 threading.Thread(target=run_cycle_balance_sprint_broadcast, daemon=True).start()
