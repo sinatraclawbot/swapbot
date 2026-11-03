@@ -251,6 +251,31 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS cycle_participants (
+                telegram_id BIGINT NOT NULL,
+                cycle_start TIMESTAMPTZ NOT NULL,
+                cycle_end TIMESTAMPTZ NOT NULL,
+                source TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (telegram_id, cycle_start)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS circle_creation_requests (
+                id BIGSERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL,
+                cycle_start TIMESTAMPTZ NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (telegram_id, cycle_start)
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS date_creator_wallets (
                 telegram_id BIGINT PRIMARY KEY,
                 available_balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
@@ -847,14 +872,17 @@ def main_menu(user_id=None):
         )
     )
     markup.row(KeyboardButton("Wallet"), KeyboardButton("Statistics"))
-    markup.add(
-        KeyboardButton(
-            "🎯 Cycle Progress",
-            web_app=WebAppInfo(
-                url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress?token={persona_token}"
-            ),
+    if user_id is not None and is_cycle_participant(user_id):
+        markup.add(
+            KeyboardButton(
+                "🎯 Cycle Progress",
+                web_app=WebAppInfo(
+                    url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress?token={persona_token}"
+                ),
+            )
         )
-    )
+    else:
+        markup.add(KeyboardButton("➕ Create Circle"))
     markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
         markup.add(KeyboardButton("Admin Panel"))
@@ -866,6 +894,17 @@ def send_main_menu(chat_id: int, text: str):
 
 
 def send_cycle_progress_button(chat_id: int):
+    if not is_cycle_participant(chat_id):
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(
+            InlineKeyboardButton("➕ Create Circle", callback_data="create_circle_request")
+        )
+        bot.send_message(
+            chat_id,
+            "🔒 This Cycle Progress is private. Create your own Circle or request access:",
+            reply_markup=keyboard,
+        )
+        return
     access_token = create_webapp_access_token(chat_id, 7 * 24 * 60 * 60)
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
@@ -884,6 +923,72 @@ def send_cycle_progress_button(chat_id: int):
         "⚡ Follow the shared Value target for the current 8→8 cycle:",
         reply_markup=keyboard,
     )
+
+
+def submit_circle_creation_request(user, chat_id):
+    cycle_start, _ = date_creator_cycle_bounds()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO circle_creation_requests (telegram_id, cycle_start)
+            VALUES (%s, %s)
+            ON CONFLICT (telegram_id, cycle_start) DO NOTHING
+            RETURNING id
+            """,
+            (user.id, cycle_start),
+        )
+        created = cur.fetchone() is not None
+        if created:
+            add_audit(
+                cur,
+                user.id,
+                actor_name(user),
+                "REQUEST_CREATE_CIRCLE",
+                "cycle",
+                cycle_start.date().isoformat(),
+                None,
+                "PENDING",
+                "User is not a participant in the private Circle",
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+    if created:
+        username = f"@{user.username}" if getattr(user, "username", None) else "—"
+        notify_admin(
+            f"➕ Create Circle request\n"
+            f"User: {actor_name(user)}\n"
+            f"Username: {username}\n"
+            f"Telegram ID: {user.id}\n"
+            f"Cycle: {cycle_start.strftime('%d %b %Y')}"
+        )
+        send_main_menu(chat_id, "✅ Create Circle request sent to the admins.")
+    else:
+        send_main_menu(chat_id, "⏳ Your Create Circle request is already pending.")
+
+
+@bot.message_handler(func=lambda message: message.text == "➕ Create Circle")
+def create_circle_request_message(message):
+    if is_cycle_participant(message.from_user.id):
+        send_main_menu(message.chat.id, "You already have access to this Circle.")
+        return
+    submit_circle_creation_request(message.from_user, message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "create_circle_request")
+def create_circle_request_callback(call):
+    if is_cycle_participant(call.from_user.id):
+        bot.answer_callback_query(call.id, "You already have access")
+        send_cycle_progress_button(call.message.chat.id)
+        return
+    bot.answer_callback_query(call.id, "Request sent")
+    submit_circle_creation_request(call.from_user, call.message.chat.id)
 
 
 def cancel_pending_flow_for_command(message):
@@ -1726,6 +1831,118 @@ def date_creator_cycle_bounds(moment=None):
     return cycle_start, cycle_end
 
 
+def is_cycle_participant(telegram_id):
+    if telegram_id is None:
+        return False
+    if is_admin(int(telegram_id)):
+        return True
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM cycle_participants
+                WHERE telegram_id=%s
+                  AND cycle_start=%s
+                  AND cycle_end=%s
+                  AND is_active=TRUE
+            )
+            """,
+            (int(telegram_id), cycle_start, cycle_end),
+        )
+        return bool(cur.fetchone()[0])
+    finally:
+        cur.close()
+        conn.close()
+
+
+def bootstrap_notified_cycle_participants():
+    """Snapshot the users included in the approved cycle broadcasts."""
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    setting_key = f"cycle_participants_bootstrap_{cycle_start.date().isoformat()}_v1"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT 1 FROM app_settings WHERE setting_key=%s",
+            (setting_key,),
+        )
+        if cur.fetchone():
+            return
+        participant_ids = set(FULL_ADMIN_IDS)
+        cur.execute(
+            """
+            SELECT m.telegram_id
+            FROM masters m
+            WHERE m.is_active=TRUE
+              AND (
+                  m.balance <> 0
+                  OR EXISTS (
+                      SELECT 1
+                      FROM orders o
+                      WHERE o.master_telegram_id=m.telegram_id
+                        AND UPPER(COALESCE(o.payment_status,'')) IN ('GIFT','PAID')
+                        AND o.created_at >= %s AND o.created_at < %s
+                  )
+              )
+            """,
+            (cycle_start, cycle_end),
+        )
+        participant_ids.update(int(row[0]) for row in cur.fetchall() if row[0])
+        cur.execute(
+            """
+            SELECT w.telegram_id
+            FROM date_creator_wallets w
+            LEFT JOIN date_creator_rewards r ON r.creator_telegram_id=w.telegram_id
+            GROUP BY w.telegram_id, w.available_balance
+            HAVING w.available_balance <> 0
+                OR COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0) <> 0
+                OR COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0) <> 0
+                OR COALESCE(SUM(r.value_amount) FILTER (
+                    WHERE r.cycle_start=%s AND r.cycle_end=%s
+                ), 0) <> 0
+            """,
+            (cycle_start, cycle_end),
+        )
+        participant_ids.update(int(row[0]) for row in cur.fetchall() if row[0])
+        for telegram_id in participant_ids:
+            cur.execute(
+                """
+                INSERT INTO cycle_participants (
+                    telegram_id, cycle_start, cycle_end, source
+                )
+                VALUES (%s, %s, %s, 'approved_cycle_notification')
+                ON CONFLICT (telegram_id, cycle_start) DO UPDATE
+                SET is_active=TRUE, cycle_end=EXCLUDED.cycle_end
+                """,
+                (telegram_id, cycle_start, cycle_end),
+            )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            """,
+            (
+                setting_key,
+                json.dumps({
+                    "participants": len(participant_ids),
+                    "at": datetime.now(BOT_TIMEZONE).isoformat(),
+                }),
+            ),
+        )
+        conn.commit()
+        log("CYCLE PARTICIPANTS BOOTSTRAPPED", len(participant_ids))
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def add_date_creator_reward(cur, order_id, creator_id, value_amount, actor=None):
     if not creator_id:
         return None
@@ -1748,6 +1965,17 @@ def add_date_creator_reward(cur, order_id, creator_id, value_amount, actor=None)
         ON CONFLICT (telegram_id) DO NOTHING
         """,
         (creator_id, now),
+    )
+    cur.execute(
+        """
+        INSERT INTO cycle_participants (
+            telegram_id, cycle_start, cycle_end, source
+        )
+        VALUES (%s, %s, %s, 'confirmed_value_notification')
+        ON CONFLICT (telegram_id, cycle_start) DO UPDATE
+        SET is_active=TRUE, cycle_end=EXCLUDED.cycle_end
+        """,
+        (creator_id, cycle_start, cycle_end),
     )
     cur.execute(
         """
@@ -5477,6 +5705,8 @@ const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearch
 def cycle_progress_api():
     try:
         user_id, _ = verify_webapp_request(request.form)
+        if not is_cycle_participant(user_id):
+            return jsonify(error="This Cycle is private. Tap Create Circle in the bot menu."), 403
         cycle_start, cycle_end = date_creator_cycle_bounds()
         conn = get_conn()
         cur = conn.cursor()
@@ -5593,6 +5823,8 @@ def cycle_progress_api():
 def cycle_progress_like_api():
     try:
         user_id, _ = verify_webapp_request(request.form)
+        if not is_cycle_participant(user_id):
+            return jsonify(error="This Cycle is private"), 403
         conn = get_conn()
         cur = conn.cursor()
         try:
@@ -6876,6 +7108,11 @@ Please check the chat and update the status — this lead is starting to feel fo
 
 
 ensure_balance_schema()
+try:
+    bootstrap_notified_cycle_participants()
+except Exception as e:
+    log("CYCLE PARTICIPANTS BOOTSTRAP ERROR", repr(e))
+    notify_admin(f"❌ CYCLE PARTICIPANTS BOOTSTRAP ERROR: {repr(e)}")
 try:
     correction_904 = correct_gift_amount(
         904,
