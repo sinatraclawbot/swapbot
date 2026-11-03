@@ -981,6 +981,183 @@ def broadcast_cycle_progress_invitation():
     log("CYCLE PROGRESS BROADCAST COMPLETE", f"sent={sent}", f"failed={failed}")
 
 
+def broadcast_cycle_balance_sprint():
+    """Send the requested one-time personalized cycle update to funded creators."""
+    broadcast_key = "cycle_balance_sprint_2026_11_03_v1"
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            ON CONFLICT (setting_key) DO NOTHING
+            RETURNING setting_key
+            """,
+            (broadcast_key, json.dumps({"status": "sending"})),
+        )
+        if not cur.fetchone():
+            conn.rollback()
+            log("CYCLE BALANCE SPRINT", "already sent or in progress")
+            return
+        conn.commit()
+
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(o.paid_amount), 0), COUNT(*)
+            FROM orders o
+            WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+              AND COALESCE((
+                  SELECT MIN(h.created_at)
+                  FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) >= %s
+              AND COALESCE((
+                  SELECT MIN(h.created_at)
+                  FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) < %s
+            """,
+            (cycle_start, cycle_end),
+        )
+        current_value, value_dates = cur.fetchone()
+        cur.execute(
+            """
+            SELECT setting_value
+            FROM app_settings
+            WHERE setting_key='date_creator_cycle_limit_v1'
+            """
+        )
+        target_row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT
+                w.telegram_id,
+                w.available_balance,
+                COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0),
+                COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0),
+                COALESCE(SUM(r.value_amount) FILTER (
+                    WHERE r.cycle_start=%s AND r.cycle_end=%s
+                ), 0)
+            FROM date_creator_wallets w
+            LEFT JOIN date_creator_rewards r ON r.creator_telegram_id=w.telegram_id
+            GROUP BY w.telegram_id, w.available_balance
+            HAVING w.available_balance <> 0
+                OR COALESCE(SUM(r.cycle_reward) FILTER (WHERE r.cycle_status='FROZEN'), 0) <> 0
+                OR COALESCE(SUM(r.loyalty_reward) FILTER (WHERE r.loyalty_status='FROZEN'), 0) <> 0
+            ORDER BY w.telegram_id
+            """,
+            (cycle_start, cycle_end),
+        )
+        recipients = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    current_value = Decimal(current_value or 0)
+    try:
+        target_value = Decimal(target_row[0]) if target_row else Decimal("0")
+    except (InvalidOperation, ValueError):
+        target_value = Decimal("0")
+    remaining = max(Decimal("0"), target_value - current_value)
+    percent = (
+        (current_value / target_value * Decimal("100"))
+        if target_value > 0 else Decimal("0")
+    )
+    now = datetime.now(BOT_TIMEZONE)
+    seconds_left = max(0, int((cycle_end - now).total_seconds()))
+    days_left, day_remainder = divmod(seconds_left, 86400)
+    hours_left = day_remainder // 3600
+    fractional_days = Decimal(str(seconds_left / 86400)) if seconds_left else Decimal("0")
+    daily_needed = (
+        remaining / fractional_days
+        if remaining > 0 and fractional_days > 0 else Decimal("0")
+    )
+    target_text = format_money(target_value) if target_value > 0 else "Not set"
+    sent = 0
+    failed = 0
+    for creator_id, available, cycle_frozen, loyalty_frozen, personal_value in recipients:
+        try:
+            access_token = create_webapp_access_token(creator_id, 7 * 24 * 60 * 60)
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(
+                InlineKeyboardButton(
+                    "🎯 Open Live Cycle Progress",
+                    web_app=WebAppInfo(
+                        url=(
+                            f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress"
+                            f"?token={access_token}"
+                        )
+                    ),
+                )
+            )
+            bot.send_message(
+                creator_id,
+                f"⚡ <b>8→8 CYCLE · FINAL SPRINT</b> ⚡\n\n"
+                f"👛 <b>Your wallet</b>\n"
+                f"✅ Available: <b>{format_money(available)} USDT</b>\n"
+                f"🧉 Cycle bonus frozen: <b>{format_money(cycle_frozen)} USDT</b>\n"
+                f"⏳ 90-day reward frozen: <b>{format_money(loyalty_frozen)} USDT</b>\n"
+                f"🎁 Your Value this cycle: <b>{format_money(personal_value)} USDT</b>\n\n"
+                f"🎯 <b>Team target</b>\n"
+                f"📈 Progress: <b>{format_money(current_value)} / {target_text} USDT</b>\n"
+                f"🔥 Complete: <b>{percent.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%</b>\n"
+                f"💰 Still needed: <b>{format_money(remaining)} USDT</b>\n"
+                f"📊 Needed pace: <b>{format_money(daily_needed)} USDT/day</b>\n"
+                f"⏱ Time left: <b>{days_left}d {hours_left}h</b> · until "
+                f"{cycle_end.strftime('%d %b, %H:%M')}\n"
+                f"💎 Confirmed Value Dates: <b>{int(value_dates or 0)}</b>\n\n"
+                "🚀 <b>Time to push!</b> Every confirmed Value now moves the whole team "
+                "closer to the finish. Let’s make these last days count! 🔥",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            sent += 1
+        except Exception as error:
+            failed += 1
+            log("CYCLE BALANCE SPRINT USER ERROR", creator_id, repr(error))
+        time.sleep(0.06)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE app_settings
+            SET setting_value=%s
+            WHERE setting_key=%s
+            """,
+            (
+                json.dumps({
+                    "status": "completed",
+                    "sent": sent,
+                    "failed": failed,
+                    "at": datetime.now(BOT_TIMEZONE).isoformat(),
+                }),
+                broadcast_key,
+            ),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log("CYCLE BALANCE SPRINT COMPLETE", f"sent={sent}", f"failed={failed}")
+
+
+def run_cycle_balance_sprint_broadcast():
+    try:
+        broadcast_cycle_balance_sprint()
+    except Exception as error:
+        log("CYCLE BALANCE SPRINT ERROR", repr(error))
+        notify_admin(f"❌ CYCLE BALANCE SPRINT ERROR: {repr(error)}")
+
+
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎁 Value", callback_data=f"gift_{order_id}"))
@@ -6137,6 +6314,7 @@ except Exception as e:
     notify_admin(f"❌ REMOVE SWAPPER 8649754773 ERROR: {repr(e)}")
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=broadcast_cycle_progress_invitation, daemon=True).start()
+threading.Thread(target=run_cycle_balance_sprint_broadcast, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
 threading.Thread(target=date_creator_reward_worker, daemon=True).start()
