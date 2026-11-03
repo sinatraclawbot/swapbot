@@ -1158,6 +1158,197 @@ def run_cycle_balance_sprint_broadcast():
         notify_admin(f"❌ CYCLE BALANCE SPRINT ERROR: {repr(error)}")
 
 
+def broadcast_swapper_admin_cycle_sprint():
+    """Send the requested follow-up to funded Swappers and every admin once."""
+    broadcast_key = "cycle_sprint_swappers_admins_2026_11_03_v1"
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            ON CONFLICT (setting_key) DO NOTHING
+            RETURNING setting_key
+            """,
+            (broadcast_key, json.dumps({"status": "sending"})),
+        )
+        if not cur.fetchone():
+            conn.rollback()
+            log("SWAPPER ADMIN CYCLE SPRINT", "already sent or in progress")
+            return
+        conn.commit()
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(o.paid_amount), 0), COUNT(*)
+            FROM orders o
+            WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+              AND COALESCE((
+                  SELECT MIN(h.created_at) FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) >= %s
+              AND COALESCE((
+                  SELECT MIN(h.created_at) FROM order_status_history h
+                  WHERE h.order_id=o.id
+                    AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+              ), o.created_at) < %s
+            """,
+            (cycle_start, cycle_end),
+        )
+        current_value, value_dates = cur.fetchone()
+        cur.execute(
+            "SELECT setting_value FROM app_settings "
+            "WHERE setting_key='date_creator_cycle_limit_v1'"
+        )
+        target_row = cur.fetchone()
+        cur.execute(
+            """
+            SELECT
+                m.telegram_id,
+                m.balance,
+                COALESCE(SUM(o.paid_amount), 0)
+            FROM masters m
+            LEFT JOIN orders o
+              ON o.master_telegram_id=m.telegram_id
+             AND UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
+             AND COALESCE((
+                 SELECT MIN(h.created_at) FROM order_status_history h
+                 WHERE h.order_id=o.id
+                   AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+             ), o.created_at) >= %s
+             AND COALESCE((
+                 SELECT MIN(h.created_at) FROM order_status_history h
+                 WHERE h.order_id=o.id
+                   AND UPPER(COALESCE(h.payment_status, '')) IN ('GIFT', 'PAID')
+             ), o.created_at) < %s
+            WHERE m.is_active=TRUE AND m.balance <> 0
+            GROUP BY m.telegram_id, m.balance
+            ORDER BY m.telegram_id
+            """,
+            (cycle_start, cycle_end),
+        )
+        recipients = {
+            int(telegram_id): {
+                "balance": Decimal(balance or 0),
+                "personal_value": Decimal(personal_value or 0),
+                "admin": int(telegram_id) in FULL_ADMIN_IDS,
+            }
+            for telegram_id, balance, personal_value in cur.fetchall()
+        }
+        for admin_id in FULL_ADMIN_IDS:
+            recipients.setdefault(
+                int(admin_id),
+                {"balance": None, "personal_value": Decimal("0"), "admin": True},
+            )["admin"] = True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+    current_value = Decimal(current_value or 0)
+    try:
+        target_value = Decimal(target_row[0]) if target_row else Decimal("0")
+    except (InvalidOperation, ValueError):
+        target_value = Decimal("0")
+    remaining = max(Decimal("0"), target_value - current_value)
+    percent = (
+        current_value / target_value * Decimal("100")
+        if target_value > 0 else Decimal("0")
+    )
+    seconds_left = max(0, int((cycle_end - datetime.now(BOT_TIMEZONE)).total_seconds()))
+    days_left, day_remainder = divmod(seconds_left, 86400)
+    hours_left = day_remainder // 3600
+    fractional_days = Decimal(str(seconds_left / 86400)) if seconds_left else Decimal("0")
+    daily_needed = (
+        remaining / fractional_days
+        if remaining > 0 and fractional_days > 0 else Decimal("0")
+    )
+    target_text = format_money(target_value) if target_value > 0 else "Not set"
+    sent = 0
+    failed = 0
+    for user_id, details in sorted(recipients.items()):
+        try:
+            access_token = create_webapp_access_token(user_id, 7 * 24 * 60 * 60)
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(
+                InlineKeyboardButton(
+                    "🎯 Open Live Cycle Progress",
+                    web_app=WebAppInfo(
+                        url=(
+                            f"{RENDER_EXTERNAL_URL.rstrip('/')}/cycle-progress"
+                            f"?token={access_token}"
+                        )
+                    ),
+                )
+            )
+            if details["balance"] is None:
+                personal_section = "🛡 <b>Admin team overview</b>"
+            else:
+                personal_section = (
+                    f"🔄 <b>Your Swapper wallet</b>\n"
+                    f"💼 Balance: <b>{format_money(details['balance'])} USDT</b>\n"
+                    f"🎁 Your Value this cycle: "
+                    f"<b>{format_money(details['personal_value'])} USDT</b>"
+                )
+                if details["admin"]:
+                    personal_section += "\n🛡 Admin access: <b>YES</b>"
+            bot.send_message(
+                user_id,
+                f"⚡ <b>8→8 CYCLE · FINAL SPRINT</b> ⚡\n\n"
+                f"{personal_section}\n\n"
+                f"🎯 <b>Team target</b>\n"
+                f"📈 Progress: <b>{format_money(current_value)} / {target_text} USDT</b>\n"
+                f"🔥 Complete: <b>{percent.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%</b>\n"
+                f"💰 Still needed: <b>{format_money(remaining)} USDT</b>\n"
+                f"📊 Needed pace: <b>{format_money(daily_needed)} USDT/day</b>\n"
+                f"⏱ Time left: <b>{days_left}d {hours_left}h</b> · until "
+                f"{cycle_end.strftime('%d %b, %H:%M')}\n"
+                f"💎 Confirmed Value Dates: <b>{int(value_dates or 0)}</b>\n\n"
+                "🚀 <b>Let’s push!</b> Every confirmed Value matters. "
+                "The finish line is close — time to turn up the pace! 🔥",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            sent += 1
+        except Exception as error:
+            failed += 1
+            log("SWAPPER ADMIN CYCLE SPRINT USER ERROR", user_id, repr(error))
+        time.sleep(0.06)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE app_settings SET setting_value=%s WHERE setting_key=%s",
+            (
+                json.dumps({
+                    "status": "completed",
+                    "sent": sent,
+                    "failed": failed,
+                    "at": datetime.now(BOT_TIMEZONE).isoformat(),
+                }),
+                broadcast_key,
+            ),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    log("SWAPPER ADMIN CYCLE SPRINT COMPLETE", f"sent={sent}", f"failed={failed}")
+
+
+def run_swapper_admin_cycle_sprint_broadcast():
+    try:
+        broadcast_swapper_admin_cycle_sprint()
+    except Exception as error:
+        log("SWAPPER ADMIN CYCLE SPRINT ERROR", repr(error))
+        notify_admin(f"❌ SWAPPER ADMIN CYCLE SPRINT ERROR: {repr(error)}")
+
+
 def order_group_keyboard(order_id: int):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎁 Value", callback_data=f"gift_{order_id}"))
@@ -6315,6 +6506,7 @@ except Exception as e:
 threading.Thread(target=setup_webhook, daemon=True).start()
 threading.Thread(target=broadcast_cycle_progress_invitation, daemon=True).start()
 threading.Thread(target=run_cycle_balance_sprint_broadcast, daemon=True).start()
+threading.Thread(target=run_swapper_admin_cycle_sprint_broadcast, daemon=True).start()
 threading.Thread(target=send_low_balance_reminders, daemon=True).start()
 threading.Thread(target=send_unresolved_lead_reminders, daemon=True).start()
 threading.Thread(target=date_creator_reward_worker, daemon=True).start()
