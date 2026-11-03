@@ -276,6 +276,26 @@ def ensure_balance_schema():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS cycle_personal_targets (
+                telegram_id BIGINT NOT NULL,
+                target_cycle_start TIMESTAMPTZ NOT NULL,
+                target_cycle_end TIMESTAMPTZ NOT NULL,
+                target_amount NUMERIC(14, 2) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (telegram_id, target_cycle_start),
+                CONSTRAINT cycle_personal_target_positive CHECK (target_amount > 0)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cycle_personal_targets_cycle
+            ON cycle_personal_targets (target_cycle_start, target_cycle_end)
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS date_creator_wallets (
                 telegram_id BIGINT PRIMARY KEY,
                 available_balance NUMERIC(14, 2) NOT NULL DEFAULT 0,
@@ -1839,6 +1859,36 @@ def date_creator_cycle_bounds(moment=None):
     return cycle_start, cycle_end
 
 
+def next_date_creator_cycle_bounds(moment=None):
+    _, current_end = date_creator_cycle_bounds(moment)
+    return date_creator_cycle_bounds(current_end + timedelta(seconds=1))
+
+
+def get_cycle_team_target(cur, cycle_start, cycle_end):
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(target_amount), 0), COUNT(*)
+        FROM cycle_personal_targets
+        WHERE target_cycle_start=%s AND target_cycle_end=%s
+        """,
+        (cycle_start, cycle_end),
+    )
+    personal_total, contributors = cur.fetchone()
+    personal_total = Decimal(personal_total or 0)
+    if personal_total > 0:
+        return personal_total, int(contributors or 0), "personal_targets"
+    cur.execute(
+        "SELECT setting_value FROM app_settings "
+        "WHERE setting_key='date_creator_cycle_limit_v1'"
+    )
+    fallback = cur.fetchone()
+    try:
+        fallback_total = Decimal(fallback[0]) if fallback else Decimal("0")
+    except (InvalidOperation, ValueError):
+        fallback_total = Decimal("0")
+    return fallback_total, 0, "admin_fallback" if fallback_total > 0 else "not_set"
+
+
 def is_cycle_participant(telegram_id):
     if telegram_id is None:
         return False
@@ -2107,11 +2157,6 @@ def process_date_creator_rewards_once():
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT setting_value FROM app_settings WHERE setting_key='date_creator_cycle_limit_v1'"
-        )
-        setting = cur.fetchone()
-        cycle_limit = Decimal(setting[0]) if setting else Decimal("0")
-        cur.execute(
             """
             SELECT DISTINCT cycle_start, cycle_end
             FROM date_creator_rewards
@@ -2121,6 +2166,7 @@ def process_date_creator_rewards_once():
         )
         completed_cycles = cur.fetchall()
         for cycle_start, cycle_end in completed_cycles:
+            cycle_limit, _, _ = get_cycle_team_target(cur, cycle_start, cycle_end)
             cur.execute(
                 """
                 SELECT COALESCE(SUM(o.paid_amount), 0)
@@ -2613,9 +2659,7 @@ def get_balance(message):
         cur.execute(
             """
             SELECT
-                COALESCE(SUM(o.paid_amount), 0),
-                COALESCE((SELECT setting_value::NUMERIC FROM app_settings
-                          WHERE setting_key='date_creator_cycle_limit_v1'), 0)
+                COALESCE(SUM(o.paid_amount), 0)
             FROM orders o
             WHERE UPPER(COALESCE(o.payment_status, '')) IN ('GIFT', 'PAID')
               AND COALESCE((
@@ -2633,7 +2677,10 @@ def get_balance(message):
             """,
             (cycle_start_at, cycle_end_at),
         )
-        global_cycle_value, global_cycle_limit = cur.fetchone()
+        global_cycle_value = cur.fetchone()[0]
+        global_cycle_limit, _, _ = get_cycle_team_target(
+            cur, cycle_start_at, cycle_end_at
+        )
         cur.close()
         conn.close()
 
@@ -5512,10 +5559,12 @@ def wallet_page():
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>SwapDate Wallet</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{color-scheme:light dark;--accent:var(--tg-theme-button-color,#7065ff);--text:var(--tg-theme-text-color,#f8f8ff);--hint:var(--tg-theme-hint-color,#a9abc0);--card:var(--tg-theme-secondary-bg-color,#181a27);--bg:var(--tg-theme-bg-color,#0d0f18)}*{box-sizing:border-box}body{min-height:100dvh;margin:0;padding:18px 15px calc(28px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at 15% 0%,color-mix(in srgb,var(--accent) 32%,transparent),transparent 38%),radial-gradient(circle at 100% 45%,rgba(0,211,255,.17),transparent 42%),var(--bg)}.wrap{width:min(100%,480px);margin:auto}.loading,.error{padding:34vh 18px;text-align:center}.spinner{width:46px;height:46px;margin:0 auto 15px;border:4px solid color-mix(in srgb,var(--hint) 20%,transparent);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.hidden{display:none!important}.head{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.title small{display:block;color:var(--hint);font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.title h1{margin:3px 0 0;font-size:27px;letter-spacing:-.04em}.refresh{width:43px;height:43px;border:1px solid color-mix(in srgb,var(--hint) 20%,transparent);border-radius:14px;color:var(--text);background:color-mix(in srgb,var(--card) 88%,transparent);font-size:20px}.hero{position:relative;overflow:hidden;padding:23px 20px;border-radius:25px;background:linear-gradient(135deg,#7568ff,#4f7cff 52%,#16c7d9);box-shadow:0 22px 50px rgba(70,91,255,.28)}.hero:before,.hero:after{content:"";position:absolute;border:1px solid rgba(255,255,255,.17);border-radius:50%}.hero:before{width:190px;height:190px;right:-70px;top:-105px}.hero:after{width:115px;height:115px;right:-24px;bottom:-78px}.hero-label{position:relative;color:rgba(255,255,255,.74);font-size:13px;font-weight:700}.balance{position:relative;margin:7px 0 14px;color:#fff;font-size:39px;font-weight:900;letter-spacing:-.055em}.balance small{font-size:15px;letter-spacing:0;opacity:.78}.chips{position:relative;display:flex;flex-wrap:wrap;gap:7px}.chip{padding:6px 10px;border:1px solid rgba(255,255,255,.2);border-radius:99px;color:#fff;background:rgba(11,18,54,.15);font-size:11px;font-weight:800}.section{margin:19px 2px 9px;color:var(--hint);font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{min-width:0;padding:16px;border:1px solid color-mix(in srgb,var(--hint) 13%,transparent);border-radius:19px;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 98%,white 2%),color-mix(in srgb,var(--card) 88%,transparent));box-shadow:0 10px 30px rgba(0,0,0,.11)}.card.wide{grid-column:1/-1}.card .icon{font-size:21px}.card b{display:block;margin:8px 0 4px;font-size:19px;overflow-wrap:anywhere}.card span{color:var(--hint);font-size:12px;line-height:1.35}.role{margin-top:10px;padding:17px;border-radius:21px;border:1px solid color-mix(in srgb,var(--accent) 18%,transparent);background:color-mix(in srgb,var(--card) 92%,transparent)}.role-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.role-head strong{font-size:17px}.role-balance{font-size:17px;font-weight:850}.rows{margin-top:13px;border-top:1px solid color-mix(in srgb,var(--hint) 13%,transparent)}.row{display:flex;justify-content:space-between;gap:15px;padding:11px 0;border-bottom:1px solid color-mix(in srgb,var(--hint) 11%,transparent);font-size:13px}.row span:first-child{color:var(--hint)}.row b{text-align:right}.progress{height:9px;margin:13px 0 8px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--hint) 16%,transparent)}.progress i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7768ff,#1dd5e6,#5ef3a5);transition:width 1s ease}.action{position:sticky;bottom:max(7px,env(safe-area-inset-bottom));width:100%;min-height:52px;margin-top:14px;border:0;border-radius:17px;color:var(--tg-theme-button-text-color,#fff);background:linear-gradient(135deg,#ff557e,#815cff);box-shadow:0 14px 34px rgba(139,83,255,.28);font:inherit;font-size:16px;font-weight:850}.empty{padding:28px 18px;text-align:center;color:var(--hint)}.error{color:#ff7777}
-</style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Opening your wallet…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><div class="head"><div class="title"><small>SwapDate</small><h1>My Wallet</h1></div><button id="refresh" class="refresh" type="button">↻</button></div><section class="hero"><div id="heroLabel" class="hero-label">Combined balance</div><div class="balance"><span id="heroBalance">0.00</span> <small>USDT</small></div><div id="chips" class="chips"></div></section><div class="section">Quick view</div><div id="quick" class="grid"></div><div id="roles"></div><div id="circle"></div><button id="withdraw" class="action hidden" type="button">💸 Request Withdrawal</button></main></div>
+:root{color-scheme:light dark;--accent:var(--tg-theme-button-color,#7065ff);--text:var(--tg-theme-text-color,#f8f8ff);--hint:var(--tg-theme-hint-color,#a9abc0);--card:var(--tg-theme-secondary-bg-color,#181a27);--bg:var(--tg-theme-bg-color,#0d0f18)}*{box-sizing:border-box}body{min-height:100dvh;margin:0;padding:18px 15px calc(28px + env(safe-area-inset-bottom));font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at 15% 0%,color-mix(in srgb,var(--accent) 32%,transparent),transparent 38%),radial-gradient(circle at 100% 45%,rgba(0,211,255,.17),transparent 42%),var(--bg)}.wrap{width:min(100%,480px);margin:auto}.loading,.error{padding:34vh 18px;text-align:center}.spinner{width:46px;height:46px;margin:0 auto 15px;border:4px solid color-mix(in srgb,var(--hint) 20%,transparent);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.hidden{display:none!important}.head{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.title small{display:block;color:var(--hint);font-size:12px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.title h1{margin:3px 0 0;font-size:27px;letter-spacing:-.04em}.refresh{width:43px;height:43px;border:1px solid color-mix(in srgb,var(--hint) 20%,transparent);border-radius:14px;color:var(--text);background:color-mix(in srgb,var(--card) 88%,transparent);font-size:20px}.hero{position:relative;overflow:hidden;padding:23px 20px;border-radius:25px;background:linear-gradient(135deg,#7568ff,#4f7cff 52%,#16c7d9);box-shadow:0 22px 50px rgba(70,91,255,.28)}.hero:before,.hero:after{content:"";position:absolute;border:1px solid rgba(255,255,255,.17);border-radius:50%}.hero:before{width:190px;height:190px;right:-70px;top:-105px}.hero:after{width:115px;height:115px;right:-24px;bottom:-78px}.hero-label{position:relative;color:rgba(255,255,255,.74);font-size:13px;font-weight:700}.balance{position:relative;margin:7px 0 14px;color:#fff;font-size:39px;font-weight:900;letter-spacing:-.055em}.balance small{font-size:15px;letter-spacing:0;opacity:.78}.chips{position:relative;display:flex;flex-wrap:wrap;gap:7px}.chip{padding:6px 10px;border:1px solid rgba(255,255,255,.2);border-radius:99px;color:#fff;background:rgba(11,18,54,.15);font-size:11px;font-weight:800}.section{margin:19px 2px 9px;color:var(--hint);font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{min-width:0;padding:16px;border:1px solid color-mix(in srgb,var(--hint) 13%,transparent);border-radius:19px;background:linear-gradient(145deg,color-mix(in srgb,var(--card) 98%,white 2%),color-mix(in srgb,var(--card) 88%,transparent));box-shadow:0 10px 30px rgba(0,0,0,.11)}.card.wide{grid-column:1/-1}.card .icon{font-size:21px}.card b{display:block;margin:8px 0 4px;font-size:19px;overflow-wrap:anywhere}.card span{color:var(--hint);font-size:12px;line-height:1.35}.role{margin-top:10px;padding:17px;border-radius:21px;border:1px solid color-mix(in srgb,var(--accent) 18%,transparent);background:color-mix(in srgb,var(--card) 92%,transparent)}.role-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.role-head strong{font-size:17px}.role-balance{font-size:17px;font-weight:850}.rows{margin-top:13px;border-top:1px solid color-mix(in srgb,var(--hint) 13%,transparent)}.row{display:flex;justify-content:space-between;gap:15px;padding:11px 0;border-bottom:1px solid color-mix(in srgb,var(--hint) 11%,transparent);font-size:13px}.row span:first-child{color:var(--hint)}.row b{text-align:right}.progress{height:9px;margin:13px 0 8px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--hint) 16%,transparent)}.progress i{display:block;width:0;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7768ff,#1dd5e6,#5ef3a5);transition:width 1s ease}.target-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:13px}.target-entry input{min-width:0;width:100%;height:46px;padding:0 12px;border:1px solid color-mix(in srgb,var(--hint) 25%,transparent);border-radius:13px;color:var(--text);background:var(--bg);font:inherit;font-size:16px}.target-entry button{min-height:46px;padding:0 15px;border:0;border-radius:13px;color:#fff;background:linear-gradient(135deg,#7568ff,#16c7d9);font:inherit;font-weight:800}.target-note{min-height:18px;margin-top:8px;color:var(--hint);font-size:12px}.action{position:sticky;bottom:max(7px,env(safe-area-inset-bottom));width:100%;min-height:52px;margin-top:14px;border:0;border-radius:17px;color:var(--tg-theme-button-text-color,#fff);background:linear-gradient(135deg,#ff557e,#815cff);box-shadow:0 14px 34px rgba(139,83,255,.28);font:inherit;font-size:16px;font-weight:850}.empty{padding:28px 18px;text-align:center;color:var(--hint)}.error{color:#ff7777}
+</style></head><body><div class="wrap"><div id="loading" class="loading"><div class="spinner"></div>Opening your wallet…</div><div id="error" class="error hidden"></div><main id="content" class="hidden"><div class="head"><div class="title"><small>SwapDate</small><h1>My Wallet</h1></div><button id="refresh" class="refresh" type="button">↻</button></div><section class="hero"><div id="heroLabel" class="hero-label">Combined balance</div><div class="balance"><span id="heroBalance">0.00</span> <small>USDT</small></div><div id="chips" class="chips"></div></section><div class="section">Quick view</div><div id="quick" class="grid"></div><div id="roles"></div><div id="targetPlan"></div><div id="circle"></div><button id="withdraw" class="action hidden" type="button">💸 Request Withdrawal</button></main></div>
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearchParams(location.search).get('token')||'',loading=document.getElementById('loading'),content=document.getElementById('content'),error=document.getElementById('error'),withdraw=document.getElementById('withdraw');const money=v=>new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(v||0));function card(icon,value,label,wide=''){return `<div class="card ${wide}"><div class="icon">${icon}</div><b>${money(value)} USDT</b><span>${label}</span></div>`}function row(label,value){return `<div class="row"><span>${label}</span><b>${value}</b></div>`}async function load(){loading.classList.remove('hidden');content.classList.add('hidden');error.classList.add('hidden');try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);const response=await fetch('/api/wallet',{method:'POST',body:form}),data=await response.json();if(!response.ok)throw new Error(data.error||'Could not load wallet');document.getElementById('heroLabel').textContent=data.hero_label;document.getElementById('heroBalance').textContent=money(data.hero_balance);document.getElementById('chips').innerHTML=data.roles.map(role=>`<span class="chip">${role}</span>`).join('')||'<span class="chip">No wallet yet</span>';document.getElementById('quick').innerHTML=card('🎁',data.personal_cycle_value,'Your confirmed Value across roles')+card('💸',data.pending_withdrawals,'Pending withdrawals');let roles='';if(data.swapper){roles+=`<div class="section">Swapper wallet</div><section class="role"><div class="role-head"><strong>🔄 Swapper</strong><div class="role-balance">${money(data.swapper.balance)} USDT</div></div><div class="rows">${row('Circle Value',money(data.swapper.cycle_value)+' USDT')}${row('Value cycle',data.cycle_label)}</div></section>`}if(data.date_creator){roles+=`<div class="section">Date Creator wallet</div><section class="role"><div class="role-head"><strong>📅 Date Creator</strong><div class="role-balance">${money(data.date_creator.available)} USDT</div></div><div class="rows">${row('Available now',money(data.date_creator.available)+' USDT')}${row('Frozen cycle bonus · 1.5%',money(data.date_creator.cycle_frozen)+' USDT')}${row('Frozen 90-day reward · 2%',money(data.date_creator.loyalty_frozen)+' USDT')}${row('Started',data.date_creator.started)}</div></section>`}document.getElementById('roles').innerHTML=roles||'<div class="empty">No wallet activity yet. Your wallet will appear after the first balance operation.</div>';if(data.circle){const percent=Math.min(100,Math.max(0,Number(data.circle.percent||0)));document.getElementById('circle').innerHTML=`<div class="section">Circle 1</div><section class="role"><div class="role-head"><strong>🎯 Team progress</strong><div class="role-balance">${percent.toFixed(1)}%</div></div><div class="progress"><i style="width:${percent}%"></i></div><div class="rows">${row('Current Value',money(data.circle.current)+' USDT')}${row('Target',data.circle.target_set?money(data.circle.target)+' USDT':'Not set')}${row('Remaining',data.circle.target_set?money(data.circle.remaining)+' USDT':'—')}${row('Period',data.cycle_label)}</div></section>`}else{document.getElementById('circle').innerHTML='<div class="section">Circle</div><div class="empty">🔒 Circle 1 progress is private.</div>'}withdraw.classList.toggle('hidden',!data.can_withdraw);loading.classList.add('hidden');content.classList.remove('hidden')}catch(e){loading.classList.add('hidden');error.textContent=e.message;error.classList.remove('hidden')}}document.getElementById('refresh').addEventListener('click',load);withdraw.addEventListener('click',()=>{withdraw.disabled=true;withdraw.textContent='Opening withdrawal…';tg.sendData(JSON.stringify({type:'wallet_withdrawal'}));setTimeout(()=>tg.close(),220)});load();
+</script><script>
+async function loadTargetPlan(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);const response=await fetch('/api/wallet',{method:'POST',body:form}),data=await response.json();if(!response.ok||!data.next_circle){document.getElementById('targetPlan').innerHTML='';return}document.getElementById('targetPlan').innerHTML=`<div class="section">Next Circle plan</div><section class="role"><div class="role-head"><strong>🎯 Personal Target</strong><div class="role-balance">${money(data.next_circle.personal_target)} USDT</div></div><div class="rows">${row('Next Circle',data.next_circle.label)}${row('Combined team target',money(data.next_circle.combined_target)+' USDT')}${row('Swappers joined',String(data.next_circle.contributors))}</div><div class="target-entry"><input id="personalTarget" type="number" min="0.01" max="10000000" step="0.01" inputmode="decimal" placeholder="Your target in USDT" value="${Number(data.next_circle.personal_target)>0?data.next_circle.personal_target:''}"><button id="saveTarget" type="button" onclick="savePersonalTarget()">${Number(data.next_circle.personal_target)>0?'✏️ Update':'➕ Add'} Target</button></div><div id="targetNote" class="target-note">Your target will count toward the next Circle team target.</div></section>`}catch(e){document.getElementById('targetPlan').innerHTML=''}}async function savePersonalTarget(){const input=document.getElementById('personalTarget'),button=document.getElementById('saveTarget'),note=document.getElementById('targetNote'),amount=input?.value.trim();if(!amount||Number(amount)<=0){note.textContent='Enter a positive target amount.';return}button.disabled=true;button.textContent='Saving…';note.textContent='';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);form.append('amount',amount);const response=await fetch('/api/wallet/personal-target',{method:'POST',body:form}),result=await response.json();if(!response.ok)throw new Error(result.error||'Could not save target');note.textContent=`✅ Saved. Combined next Circle target: ${money(result.combined_target)} USDT`;tg.HapticFeedback?.notificationOccurred('success');setTimeout(loadTargetPlan,650)}catch(e){note.textContent=e.message;button.disabled=false;button.textContent='🎯 Save Target'}}document.getElementById('refresh').addEventListener('click',loadTargetPlan);setTimeout(loadTargetPlan,250);
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
 
@@ -5590,11 +5639,28 @@ def wallet_api():
                 (cycle_start, cycle_end),
             )
             global_value, value_dates = cur.fetchone()
-            cur.execute(
-                "SELECT setting_value FROM app_settings "
-                "WHERE setting_key='date_creator_cycle_limit_v1'"
+            target, target_contributors, target_source = get_cycle_team_target(
+                cur, cycle_start, cycle_end
             )
-            target_row = cur.fetchone()
+            next_cycle_start, next_cycle_end = next_date_creator_cycle_bounds()
+            cur.execute(
+                """
+                SELECT target_amount
+                FROM cycle_personal_targets
+                WHERE telegram_id=%s AND target_cycle_start=%s
+                """,
+                (user_id, next_cycle_start),
+            )
+            personal_target_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(target_amount), 0), COUNT(*)
+                FROM cycle_personal_targets
+                WHERE target_cycle_start=%s AND target_cycle_end=%s
+                """,
+                (next_cycle_start, next_cycle_end),
+            )
+            next_combined_target, next_target_contributors = cur.fetchone()
         finally:
             cur.close()
             conn.close()
@@ -5612,10 +5678,9 @@ def wallet_api():
             available = cycle_frozen = loyalty_frozen = creator_value = pending = Decimal("0")
             started = None
         global_value = Decimal(global_value or 0)
-        try:
-            target = Decimal(target_row[0]) if target_row else Decimal("0")
-        except (InvalidOperation, ValueError):
-            target = Decimal("0")
+        target = Decimal(target or 0)
+        personal_target = Decimal(personal_target_row[0]) if personal_target_row else Decimal("0")
+        next_combined_target = Decimal(next_combined_target or 0)
         remaining = max(Decimal("0"), target - global_value)
         percent = global_value / target * Decimal("100") if target > 0 else Decimal("0")
         roles = []
@@ -5660,6 +5725,18 @@ def wallet_api():
                 }
                 if creator_row else None
             ),
+            next_circle=(
+                {
+                    "label": (
+                        f"{next_cycle_start.strftime('%d %b')} → "
+                        f"{next_cycle_end.strftime('%d %b %Y')}"
+                    ),
+                    "personal_target": format_money(personal_target),
+                    "combined_target": format_money(next_combined_target),
+                    "contributors": int(next_target_contributors or 0),
+                }
+                if swapper_row else None
+            ),
             circle=(
                 {
                     "current": format_money(global_value),
@@ -5667,6 +5744,8 @@ def wallet_api():
                     "remaining": format_money(remaining),
                     "percent": str(percent.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
                     "target_set": target > 0,
+                    "target_source": target_source,
+                    "target_contributors": target_contributors,
                     "value_dates": int(value_dates or 0),
                 }
                 if is_cycle_participant(user_id) else None
@@ -5679,6 +5758,110 @@ def wallet_api():
     except Exception as error:
         log("WALLET API ERROR", repr(error))
         return jsonify(error="Could not load wallet"), 500
+
+
+@app.route("/api/wallet/personal-target", methods=["POST"])
+def wallet_personal_target_api():
+    try:
+        user_id, user = verify_webapp_request(request.form)
+        try:
+            amount = Decimal(
+                str(request.form.get("amount", "")).strip().replace(",", ".")
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
+            raise ValueError("Enter a valid personal target")
+        if amount <= 0 or amount > Decimal("10000000"):
+            raise ValueError("Personal target must be between 0.01 and 10,000,000 USDT")
+        next_cycle_start, next_cycle_end = next_date_creator_cycle_bounds()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT 1 FROM masters
+                WHERE telegram_id=%s AND is_active=TRUE
+                """,
+                (user_id,),
+            )
+            if not cur.fetchone():
+                conn.rollback()
+                return jsonify(error="Only active Swappers can add a personal target"), 403
+            cur.execute(
+                """
+                SELECT target_amount
+                FROM cycle_personal_targets
+                WHERE telegram_id=%s AND target_cycle_start=%s
+                FOR UPDATE
+                """,
+                (user_id, next_cycle_start),
+            )
+            previous = cur.fetchone()
+            old_amount = previous[0] if previous else None
+            cur.execute(
+                """
+                INSERT INTO cycle_personal_targets (
+                    telegram_id, target_cycle_start, target_cycle_end, target_amount
+                )
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (telegram_id, target_cycle_start) DO UPDATE
+                SET target_cycle_end=EXCLUDED.target_cycle_end,
+                    target_amount=EXCLUDED.target_amount,
+                    updated_at=NOW()
+                """,
+                (user_id, next_cycle_start, next_cycle_end, amount),
+            )
+            add_audit(
+                cur,
+                user_id,
+                (
+                    f"@{user.get('username')}"
+                    if isinstance(user, dict) and user.get("username")
+                    else str(user_id)
+                ),
+                "SET_PERSONAL_TARGET",
+                "cycle_personal_target",
+                f"{user_id}:{next_cycle_start.date().isoformat()}",
+                old_amount,
+                amount,
+                "Target contributes to the next Circle team target",
+            )
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(target_amount), 0), COUNT(*)
+                FROM cycle_personal_targets
+                WHERE target_cycle_start=%s AND target_cycle_end=%s
+                """,
+                (next_cycle_start, next_cycle_end),
+            )
+            combined, contributors = cur.fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+            conn.close()
+        notify_admin(
+            f"🎯 Personal target updated\n"
+            f"Swapper: {user_id}\n"
+            f"Personal target: {format_money(amount)} USDT\n"
+            f"Next Circle team target: {format_money(combined)} USDT\n"
+            f"Contributors: {int(contributors or 0)}"
+        )
+        return jsonify(
+            personal_target=format_money(amount),
+            combined_target=format_money(combined),
+            contributors=int(contributors or 0),
+            next_circle=(
+                f"{next_cycle_start.strftime('%d %b')} → "
+                f"{next_cycle_end.strftime('%d %b %Y')}"
+            ),
+        )
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except Exception as error:
+        log("PERSONAL TARGET API ERROR", repr(error))
+        return jsonify(error="Could not save personal target"), 500
 
 
 @app.route("/api/admin/analytics/openapi.json", methods=["GET"])
@@ -6063,14 +6246,9 @@ def cycle_progress_api():
                 (cycle_start, cycle_end),
             )
             current_value, value_dates = cur.fetchone()
-            cur.execute(
-                """
-                SELECT setting_value
-                FROM app_settings
-                WHERE setting_key='date_creator_cycle_limit_v1'
-                """
+            target_value, target_contributors, target_source = get_cycle_team_target(
+                cur, cycle_start, cycle_end
             )
-            target_row = cur.fetchone()
             cur.execute("SELECT COUNT(*) FROM cycle_progress_likes")
             like_count = int(cur.fetchone()[0] or 0)
             cur.execute(
@@ -6083,10 +6261,7 @@ def cycle_progress_api():
             conn.close()
 
         current_value = Decimal(current_value or 0)
-        try:
-            target_value = Decimal(target_row[0]) if target_row else Decimal("0")
-        except (InvalidOperation, ValueError):
-            target_value = Decimal("0")
+        target_value = Decimal(target_value or 0)
         target_set = target_value > 0
         percent = (
             (current_value / target_value * Decimal("100"))
@@ -6141,6 +6316,8 @@ def cycle_progress_api():
             like_count=like_count,
             liked=liked,
             target_set=target_set,
+            target_source=target_source,
+            target_contributors=target_contributors,
             status_text=status_text,
         )
     except ValueError as error:
