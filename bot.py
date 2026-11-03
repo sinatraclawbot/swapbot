@@ -5968,6 +5968,8 @@ def analytics_openapi_schema():
 def admin_analytics_api():
     if not analytics_api_authorized():
         return jsonify(error="Unauthorized"), 401
+    report_stage = "request parsing"
+    report_warnings = []
     try:
         default_start, default_end = date_creator_cycle_bounds()
         start_value = (request.args.get("start") or "").strip()
@@ -6018,9 +6020,11 @@ def admin_analytics_api():
             filter_params.append(persona_value)
         filter_sql = " AND " + " AND ".join(filters) if filters else ""
 
+        report_stage = "database connection"
         conn = get_conn()
         cur = conn.cursor()
         try:
+            report_stage = "order events query"
             cur.execute(
                 f"""
                 WITH order_events AS (
@@ -6063,38 +6067,72 @@ def admin_analytics_api():
                 ),
             )
             order_rows = cur.fetchall()
-            cur.execute(
+
+            def optional_query(name, sql, default, one=False):
+                savepoint = f"analytics_{name}"
+                cur.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    cur.execute(sql)
+                    result = cur.fetchone() if one else cur.fetchall()
+                    cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    return result
+                except Exception as query_error:
+                    cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    report_warnings.append(f"{name} unavailable")
+                    log("ADMIN ANALYTICS OPTIONAL QUERY ERROR", name, repr(query_error))
+                    return default
+
+            report_stage = "wallet queries"
+            swapper_wallet_rows = optional_query(
+                "swapper_wallets",
                 """
                 SELECT telegram_id, balance, is_online
                 FROM masters
                 WHERE is_active=TRUE
                 ORDER BY telegram_id
-                """
+                """,
+                [],
             )
-            swapper_wallet_rows = cur.fetchall()
-            cur.execute(
+            creator_wallet_rows = optional_query(
+                "date_creator_wallets",
                 """
                 SELECT telegram_id, available_balance
                 FROM date_creator_wallets
                 ORDER BY telegram_id
-                """
+                """,
+                [],
             )
-            creator_wallet_rows = cur.fetchall()
-            cur.execute(
+            frozen_cycle_total, frozen_loyalty_total = optional_query(
+                "date_creator_rewards",
                 """
                 SELECT
                     COALESCE(SUM(cycle_reward) FILTER (WHERE cycle_status='FROZEN'), 0),
                     COALESCE(SUM(loyalty_reward) FILTER (WHERE loyalty_status='FROZEN'), 0)
                 FROM date_creator_rewards
-                """
+                """,
+                (Decimal("0"), Decimal("0")),
+                one=True,
             )
-            frozen_cycle_total, frozen_loyalty_total = cur.fetchone()
         finally:
             cur.close()
             conn.close()
 
+        report_stage = "report aggregation"
+
+        def normalized_event_time(value):
+            if value is None:
+                return None
+            # Older installations may still return TIMESTAMP values without a
+            # timezone. They represent local bot time; comparing them directly
+            # with the timezone-aware report bounds raises TypeError.
+            if value.tzinfo is None:
+                return value.replace(tzinfo=BOT_TIMEZONE)
+            return value.astimezone(BOT_TIMEZONE)
+
         def in_period(value):
-            return value is not None and period_start <= value < period_end
+            normalized = normalized_event_time(value)
+            return normalized is not None and period_start <= normalized < period_end
 
         daily = {}
         cursor_day = period_start.date()
@@ -6142,6 +6180,7 @@ def admin_analytics_api():
                 "disputes": 0,
             })
             if in_period(created_at):
+                created_at = normalized_event_time(created_at)
                 total_leads += 1
                 assigned_dates += int(master_id is not None)
                 day = daily[created_at.astimezone(BOT_TIMEZONE).date().isoformat()]
@@ -6151,6 +6190,7 @@ def admin_analytics_api():
                 persona_stats["created_dates"] += 1
             is_value = str(payment_status or "").upper() in ("GIFT", "PAID")
             if is_value and in_period(gift_at):
+                gift_at = normalized_event_time(gift_at)
                 amount = Decimal(paid_amount or 0)
                 value_dates += 1
                 total_value += amount
@@ -6162,6 +6202,7 @@ def admin_analytics_api():
                     stats["value_usdt"] += amount
             is_dispute = payment_status == "DISPUTE" or order_status == "DISPUTE"
             if is_dispute and in_period(dispute_at):
+                dispute_at = normalized_event_time(dispute_at)
                 disputes += 1
                 day = daily[dispute_at.astimezone(BOT_TIMEZONE).date().isoformat()]
                 day["disputes"] += 1
@@ -6212,6 +6253,7 @@ def admin_analytics_api():
         response = jsonify({
             "generated_at": datetime.now(BOT_TIMEZONE).isoformat(),
             "timezone": "Asia/Jerusalem",
+            "warnings": report_warnings,
             "period": {
                 "start": period_start.isoformat(),
                 "end_exclusive": period_end.isoformat(),
@@ -6258,8 +6300,13 @@ def admin_analytics_api():
     except ValueError as error:
         return jsonify(error=str(error)), 400
     except Exception as error:
-        log("ADMIN ANALYTICS API ERROR", repr(error))
-        return jsonify(error="Could not build analytics report"), 500
+        error_id = secrets.token_hex(4)
+        log("ADMIN ANALYTICS API ERROR", error_id, report_stage, repr(error))
+        return jsonify(
+            error="Could not build analytics report",
+            error_id=error_id,
+            stage=report_stage,
+        ), 500
 
 
 @app.route("/cycle-progress", methods=["GET"])
