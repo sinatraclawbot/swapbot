@@ -37,6 +37,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")
+ANALYTICS_API_TOKEN = os.getenv("ANALYTICS_API_TOKEN")
 ADMIN_TELEGRAM_ID_RAW = os.getenv("ADMIN_TELEGRAM_ID")
 ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID_RAW) if ADMIN_TELEGRAM_ID_RAW else None
 FULL_ADMIN_IDS = {5411302547, 1287765735}
@@ -1570,6 +1571,45 @@ def verify_webapp_request(form):
     return verify_webapp_access_token(form.get("access_token"))
 
 
+def analytics_api_authorized():
+    authorization = request.headers.get("Authorization", "")
+    bearer_token = (
+        authorization[7:].strip()
+        if authorization.lower().startswith("bearer ")
+        else ""
+    )
+    supplied_token = bearer_token or request.headers.get("X-Analytics-Key", "").strip()
+    if not supplied_token:
+        return False
+    if ANALYTICS_API_TOKEN and hmac.compare_digest(
+        supplied_token,
+        ANALYTICS_API_TOKEN,
+    ):
+        return True
+    try:
+        admin_id_raw, expires_raw, received_signature = supplied_token.split(".", 2)
+        admin_id = int(admin_id_raw)
+        expires_at = int(expires_raw)
+    except (TypeError, ValueError):
+        return False
+    if expires_at < int(time.time()) or not is_admin(admin_id):
+        return False
+    payload = f"analytics:{admin_id}:{expires_at}"
+    expected_signature = hmac.new(
+        BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected_signature, received_signature)
+
+
+def create_analytics_access_token(admin_id, ttl_seconds=30 * 24 * 60 * 60):
+    expires_at = int(time.time()) + ttl_seconds
+    payload = f"analytics:{int(admin_id)}:{expires_at}"
+    signature = hmac.new(
+        BOT_TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{int(admin_id)}.{expires_at}.{signature}", expires_at
+
+
 def canonical_persona_name(value):
     """Merge historical/free-text persona spellings into the current list."""
     raw_name = " ".join(str(value or "").replace("\u00a0", " ").split()).strip()
@@ -2104,6 +2144,28 @@ def registered_users_list(message):
         chunks.append(current)
     for chunk in chunks:
         bot.send_message(message.chat.id, chunk)
+
+
+@bot.message_handler(commands=["analytics_api"])
+def issue_analytics_api_access(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "Access denied")
+        return
+    token, expires_at = create_analytics_access_token(message.from_user.id)
+    expires_text = datetime.fromtimestamp(expires_at, BOT_TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M %Z"
+    )
+    base_url = RENDER_EXTERNAL_URL.rstrip("/")
+    bot.send_message(
+        message.chat.id,
+        f"🤖 <b>Admin Analytics API</b>\n\n"
+        f"Endpoint:\n<code>{base_url}/api/admin/analytics</code>\n\n"
+        f"OpenAPI schema:\n<code>{base_url}/api/admin/analytics/openapi.json</code>\n\n"
+        f"Bearer token (valid until {expires_text}):\n<code>{token}</code>\n\n"
+        "Send this token only to the trusted analytics agent. "
+        "Use header: <code>Authorization: Bearer TOKEN</code>",
+        parse_mode="HTML",
+    )
 
 
 @bot.message_handler(commands=["balance"])
@@ -5058,6 +5120,341 @@ def finalize_dispute(call):
     )
     dispute_channel_queue.put(order_id)
     queue_group_deletion(order_id, group_chat_id or pending["source_chat_id"])
+
+
+@app.route("/api/admin/analytics/openapi.json", methods=["GET"])
+def analytics_openapi_schema():
+    return jsonify({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "SwapDate Admin Analytics API",
+            "version": "1.0.0",
+            "description": "Read-only aggregated analytics. Mate contact data is never returned.",
+        },
+        "servers": [{"url": RENDER_EXTERNAL_URL.rstrip("/")}],
+        "components": {
+            "securitySchemes": {
+                "bearerAuth": {"type": "http", "scheme": "bearer"}
+            }
+        },
+        "security": [{"bearerAuth": []}],
+        "paths": {
+            "/api/admin/analytics": {
+                "get": {
+                    "summary": "Get admin analytics",
+                    "parameters": [
+                        {"name": "start", "in": "query", "schema": {"type": "string", "format": "date"}},
+                        {"name": "end", "in": "query", "schema": {"type": "string", "format": "date"}},
+                        {"name": "operator_id", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "swapper_id", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "persona", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {
+                        "200": {"description": "Analytics report"},
+                        "401": {"description": "Missing or invalid API token"},
+                    },
+                }
+            }
+        },
+    })
+
+
+@app.route("/api/admin/analytics", methods=["GET"])
+def admin_analytics_api():
+    if not analytics_api_authorized():
+        return jsonify(error="Unauthorized"), 401
+    try:
+        default_start, default_end = date_creator_cycle_bounds()
+        start_value = (request.args.get("start") or "").strip()
+        end_value = (request.args.get("end") or "").strip()
+        if bool(start_value) != bool(end_value):
+            raise ValueError("Provide both start and end dates")
+        if start_value:
+            try:
+                period_start = datetime.strptime(start_value, "%Y-%m-%d").replace(
+                    tzinfo=BOT_TIMEZONE
+                )
+                selected_end = datetime.strptime(end_value, "%Y-%m-%d").replace(
+                    tzinfo=BOT_TIMEZONE
+                )
+            except ValueError:
+                raise ValueError("Dates must use YYYY-MM-DD")
+            if selected_end < period_start:
+                raise ValueError("End date cannot be before start date")
+            period_end = selected_end + timedelta(days=1)
+        else:
+            period_start, period_end = default_start, default_end
+        if period_end - period_start > timedelta(days=366):
+            raise ValueError("Period cannot exceed 366 days")
+
+        filters = []
+        filter_params = []
+        operator_value = (request.args.get("operator_id") or "").strip()
+        swapper_value = (request.args.get("swapper_id") or "").strip()
+        persona_value = (request.args.get("persona") or "").strip()
+        if operator_value:
+            try:
+                operator_id = int(operator_value)
+            except ValueError:
+                raise ValueError("operator_id must be an integer")
+            filters.append("o.client_telegram_id=%s")
+            filter_params.append(operator_id)
+        if swapper_value:
+            try:
+                swapper_id = int(swapper_value)
+            except ValueError:
+                raise ValueError("swapper_id must be an integer")
+            filters.append("o.master_telegram_id=%s")
+            filter_params.append(swapper_id)
+        if persona_value:
+            if len(persona_value) > 100:
+                raise ValueError("persona is too long")
+            filters.append("LOWER(COALESCE(o.profile_name,''))=LOWER(%s)")
+            filter_params.append(persona_value)
+        filter_sql = " AND " + " AND ".join(filters) if filters else ""
+
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                WITH order_events AS (
+                    SELECT
+                        o.id, o.created_at, o.client_telegram_id, o.client_username,
+                        o.master_telegram_id, o.profile_name, o.order_status,
+                        o.payment_status, o.paid_amount,
+                        COALESCE((
+                            SELECT MIN(h.created_at)
+                            FROM order_status_history h
+                            WHERE h.order_id=o.id
+                              AND UPPER(COALESCE(h.payment_status,'')) IN ('GIFT','PAID')
+                        ), o.created_at) AS gift_at,
+                        COALESCE(o.dispute_opened_at, o.created_at) AS dispute_at
+                    FROM orders o
+                )
+                SELECT o.id, o.created_at, o.client_telegram_id, o.client_username,
+                       o.master_telegram_id, o.profile_name, o.order_status,
+                       o.payment_status, o.paid_amount, o.gift_at, o.dispute_at
+                FROM order_events o
+                WHERE (
+                    (o.created_at >= %s AND o.created_at < %s)
+                    OR (
+                        UPPER(COALESCE(o.payment_status,'')) IN ('GIFT','PAID')
+                        AND o.gift_at >= %s AND o.gift_at < %s
+                    )
+                    OR (
+                        (o.payment_status='DISPUTE' OR o.order_status='DISPUTE')
+                        AND o.dispute_at >= %s AND o.dispute_at < %s
+                    )
+                )
+                {filter_sql}
+                ORDER BY o.created_at, o.id
+                """,
+                (
+                    period_start, period_end,
+                    period_start, period_end,
+                    period_start, period_end,
+                    *filter_params,
+                ),
+            )
+            order_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT telegram_id, balance, is_online
+                FROM masters
+                WHERE is_active=TRUE
+                ORDER BY telegram_id
+                """
+            )
+            swapper_wallet_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT telegram_id, available_balance
+                FROM date_creator_wallets
+                ORDER BY telegram_id
+                """
+            )
+            creator_wallet_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(cycle_reward) FILTER (WHERE cycle_status='FROZEN'), 0),
+                    COALESCE(SUM(loyalty_reward) FILTER (WHERE loyalty_status='FROZEN'), 0)
+                FROM date_creator_rewards
+                """
+            )
+            frozen_cycle_total, frozen_loyalty_total = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        def in_period(value):
+            return value is not None and period_start <= value < period_end
+
+        daily = {}
+        cursor_day = period_start.date()
+        while cursor_day < period_end.date():
+            daily[cursor_day.isoformat()] = {
+                "date": cursor_day.isoformat(),
+                "created_dates": 0,
+                "value_dates": 0,
+                "value_usdt": Decimal("0"),
+                "disputes": 0,
+            }
+            cursor_day += timedelta(days=1)
+        swappers = {}
+        creators = {}
+        personas = {}
+        total_leads = assigned_dates = value_dates = disputes = 0
+        total_value = Decimal("0")
+
+        def person_bucket(container, key, label):
+            return container.setdefault(key, {
+                "id": key,
+                "label": label,
+                "created_dates": 0,
+                "value_dates": 0,
+                "value_usdt": Decimal("0"),
+                "disputes": 0,
+            })
+
+        for (
+            order_id, created_at, creator_id, creator_username, master_id,
+            stored_persona, order_status, payment_status, paid_amount,
+            gift_at, dispute_at,
+        ) in order_rows:
+            creator_label = f"@{creator_username}" if creator_username else str(creator_id or "Unknown")
+            creator_key = str(creator_id or creator_label)
+            swapper_key = str(master_id) if master_id is not None else "unassigned"
+            persona = canonical_persona_name(stored_persona)
+            creator_stats = person_bucket(creators, creator_key, creator_label)
+            swapper_stats = person_bucket(swappers, swapper_key, swapper_key)
+            persona_stats = personas.setdefault(persona, {
+                "persona": persona,
+                "created_dates": 0,
+                "value_dates": 0,
+                "value_usdt": Decimal("0"),
+                "disputes": 0,
+            })
+            if in_period(created_at):
+                total_leads += 1
+                assigned_dates += int(master_id is not None)
+                day = daily[created_at.astimezone(BOT_TIMEZONE).date().isoformat()]
+                day["created_dates"] += 1
+                creator_stats["created_dates"] += 1
+                swapper_stats["created_dates"] += 1
+                persona_stats["created_dates"] += 1
+            is_value = str(payment_status or "").upper() in ("GIFT", "PAID")
+            if is_value and in_period(gift_at):
+                amount = Decimal(paid_amount or 0)
+                value_dates += 1
+                total_value += amount
+                day = daily[gift_at.astimezone(BOT_TIMEZONE).date().isoformat()]
+                day["value_dates"] += 1
+                day["value_usdt"] += amount
+                for stats in (creator_stats, swapper_stats, persona_stats):
+                    stats["value_dates"] += 1
+                    stats["value_usdt"] += amount
+            is_dispute = payment_status == "DISPUTE" or order_status == "DISPUTE"
+            if is_dispute and in_period(dispute_at):
+                disputes += 1
+                day = daily[dispute_at.astimezone(BOT_TIMEZONE).date().isoformat()]
+                day["disputes"] += 1
+                creator_stats["disputes"] += 1
+                swapper_stats["disputes"] += 1
+                persona_stats["disputes"] += 1
+
+        def serialize_stats(values, sort_key="value_usdt"):
+            result = []
+            for item in values:
+                converted = dict(item)
+                converted["value_usdt"] = format_money(item["value_usdt"])
+                converted["conversion_percent"] = str(
+                    (Decimal(item["value_dates"]) * Decimal("100") /
+                     Decimal(item["created_dates"]))
+                    .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    if item["created_dates"] else Decimal("0.00")
+                )
+                result.append(converted)
+            return sorted(
+                result,
+                key=lambda item: (
+                    -Decimal(item[sort_key]) if sort_key == "value_usdt"
+                    else -int(item[sort_key]),
+                    str(item.get("label") or item.get("persona") or ""),
+                ),
+            )
+
+        swapper_debt = sum(
+            (max(-Decimal(balance or 0), Decimal("0"))
+             for _, balance, _ in swapper_wallet_rows),
+            Decimal("0"),
+        )
+        creator_available = sum(
+            (Decimal(balance or 0) for _, balance in creator_wallet_rows),
+            Decimal("0"),
+        )
+        average_value = total_value / value_dates if value_dates else Decimal("0")
+        conversion = (
+            Decimal(value_dates) * Decimal("100") / Decimal(total_leads)
+            if total_leads else Decimal("0")
+        )
+        daily_output = []
+        for item in daily.values():
+            serialized = dict(item)
+            serialized["value_usdt"] = format_money(item["value_usdt"])
+            daily_output.append(serialized)
+        response = jsonify({
+            "generated_at": datetime.now(BOT_TIMEZONE).isoformat(),
+            "timezone": "Asia/Jerusalem",
+            "period": {
+                "start": period_start.isoformat(),
+                "end_exclusive": period_end.isoformat(),
+            },
+            "filters": {
+                "operator_id": operator_value or None,
+                "swapper_id": swapper_value or None,
+                "persona": persona_value or None,
+            },
+            "summary": {
+                "created_dates": total_leads,
+                "assigned_dates": assigned_dates,
+                "value_dates": value_dates,
+                "disputes": disputes,
+                "total_value_usdt": format_money(total_value),
+                "average_value_usdt": format_money(average_value),
+                "conversion_percent": str(conversion.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+            },
+            "wallet_totals": {
+                "swapper_wallets": len(swapper_wallet_rows),
+                "swapper_debt_usdt": format_money(swapper_debt),
+                "date_creator_wallets": len(creator_wallet_rows),
+                "date_creator_available_usdt": format_money(creator_available),
+                "date_creator_cycle_frozen_usdt": format_money(frozen_cycle_total),
+                "date_creator_loyalty_frozen_usdt": format_money(frozen_loyalty_total),
+            },
+            "daily": daily_output,
+            "top_swappers": serialize_stats(swappers.values()),
+            "top_date_creators": serialize_stats(creators.values()),
+            "personas": serialize_stats(personas.values()),
+            "wallets": {
+                "swappers": [
+                    {"telegram_id": int(telegram_id), "balance_usdt": format_money(balance), "online": bool(online)}
+                    for telegram_id, balance, online in swapper_wallet_rows
+                ],
+                "date_creators": [
+                    {"telegram_id": int(telegram_id), "available_usdt": format_money(balance)}
+                    for telegram_id, balance in creator_wallet_rows
+                ],
+            },
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except Exception as error:
+        log("ADMIN ANALYTICS API ERROR", repr(error))
+        return jsonify(error="Could not build analytics report"), 500
 
 
 @app.route("/cycle-progress", methods=["GET"])
