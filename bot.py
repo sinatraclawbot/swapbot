@@ -891,14 +891,13 @@ def main_menu(user_id=None):
             ),
         )
     )
-    markup.row(
+    markup.add(
         KeyboardButton(
             "💼 Wallet",
             web_app=WebAppInfo(
                 url=f"{RENDER_EXTERNAL_URL.rstrip('/')}/wallet?token={persona_token}"
             ),
-        ),
-        KeyboardButton("Statistics"),
+        )
     )
     if user_id is not None and is_cycle_participant(user_id):
         markup.add(
@@ -911,7 +910,6 @@ def main_menu(user_id=None):
         )
     else:
         markup.add(KeyboardButton("➕ Create Circle"))
-    markup.add(KeyboardButton("Lead History"))
     if user_id is not None and is_admin(user_id):
         markup.add(KeyboardButton("Admin Panel"))
     return markup
@@ -3291,7 +3289,6 @@ def admin_panel_keyboard(user_id):
     )
     kb.add(InlineKeyboardButton("✏️ Edit Value", callback_data="adm_edit_gift"))
     kb.add(InlineKeyboardButton("💰 Top Up Swapper Balance", callback_data="adm_topup"))
-    kb.add(InlineKeyboardButton("🎯 Date Creator Limit", callback_data="adm_creator_limit"))
     kb.add(InlineKeyboardButton("⭕ Circle 1 Members", callback_data="adm_circle_members"))
     return kb
 
