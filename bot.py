@@ -1870,6 +1870,73 @@ def next_date_creator_cycle_bounds(moment=None):
     return date_creator_cycle_bounds(current_end + timedelta(seconds=1))
 
 
+def migrate_recent_targets_to_current_cycle_once():
+    """Move targets saved after rollover from the former 'next Circle' UI."""
+    cycle_start, cycle_end = date_creator_cycle_bounds()
+    next_start, next_end = next_date_creator_cycle_bounds()
+    migration_key = f"personal_targets_current_circle_v1:{cycle_start.date().isoformat()}"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT 1 FROM app_settings WHERE setting_key=%s FOR UPDATE",
+            (migration_key,),
+        )
+        if cur.fetchone():
+            conn.rollback()
+            return 0
+        cur.execute(
+            """
+            SELECT telegram_id, target_amount, updated_at
+            FROM cycle_personal_targets
+            WHERE target_cycle_start=%s
+              AND target_cycle_end=%s
+              AND updated_at >= %s
+            """,
+            (next_start, next_end, cycle_start),
+        )
+        rows = cur.fetchall()
+        for telegram_id, amount, updated_at in rows:
+            cur.execute(
+                """
+                INSERT INTO cycle_personal_targets (
+                    telegram_id, target_cycle_start, target_cycle_end,
+                    target_amount, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (telegram_id, target_cycle_start) DO UPDATE
+                SET target_cycle_end=EXCLUDED.target_cycle_end,
+                    target_amount=EXCLUDED.target_amount,
+                    updated_at=EXCLUDED.updated_at
+                """,
+                (telegram_id, cycle_start, cycle_end, amount, updated_at, updated_at),
+            )
+        if rows:
+            cur.execute(
+                """
+                DELETE FROM cycle_personal_targets
+                WHERE target_cycle_start=%s
+                  AND target_cycle_end=%s
+                  AND updated_at >= %s
+                """,
+                (next_start, next_end, cycle_start),
+            )
+        cur.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value)
+            VALUES (%s, %s)
+            """,
+            (migration_key, str(len(rows))),
+        )
+        conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def get_cycle_team_target(cur, cycle_start, cycle_end):
     cur.execute(
         """
@@ -5627,7 +5694,7 @@ def wallet_page():
 <script>
 const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token=new URLSearchParams(location.search).get('token')||'',loading=document.getElementById('loading'),content=document.getElementById('content'),error=document.getElementById('error'),withdraw=document.getElementById('withdraw');const money=v=>new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(v||0));function card(icon,value,label,wide=''){return `<div class="card ${wide}"><div class="icon">${icon}</div><b>${money(value)} USDT</b><span>${label}</span></div>`}function row(label,value){return `<div class="row"><span>${label}</span><b>${value}</b></div>`}async function load(){loading.classList.remove('hidden');content.classList.add('hidden');error.classList.add('hidden');try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);const response=await fetch('/api/wallet',{method:'POST',body:form}),data=await response.json();if(!response.ok)throw new Error(data.error||'Could not load wallet');document.getElementById('heroLabel').textContent=data.hero_label;document.getElementById('heroBalance').textContent=money(data.hero_balance);document.getElementById('chips').innerHTML=data.roles.map(role=>`<span class="chip">${role}</span>`).join('')||'<span class="chip">No wallet yet</span>';document.getElementById('quick').innerHTML=card('🎁',data.personal_cycle_value,'Your confirmed Value across roles')+card('💸',data.pending_withdrawals,'Pending withdrawals');let roles='';if(data.swapper){roles+=`<div class="section">Swapper wallet</div><section class="role"><div class="role-head"><strong>🔄 Swapper</strong><div class="role-balance">${money(data.swapper.balance)} USDT</div></div><div class="rows">${row('Circle Value',money(data.swapper.cycle_value)+' USDT')}${row('Value cycle',data.cycle_label)}</div></section>`}if(data.date_creator){roles+=`<div class="section">Date Creator wallet</div><section class="role"><div class="role-head"><strong>📅 Date Creator</strong><div class="role-balance">${money(data.date_creator.available)} USDT</div></div><div class="rows">${row('Available now',money(data.date_creator.available)+' USDT')}${row('Frozen cycle bonus · 1.5%',money(data.date_creator.cycle_frozen)+' USDT')}${row('Frozen 90-day reward · 2%',money(data.date_creator.loyalty_frozen)+' USDT')}${row('Started',data.date_creator.started)}</div></section>`}document.getElementById('roles').innerHTML=roles||'<div class="empty">No wallet activity yet. Your wallet will appear after the first balance operation.</div>';if(data.circle){const percent=Math.min(100,Math.max(0,Number(data.circle.percent||0)));document.getElementById('circle').innerHTML=`<div class="section">Circle 1</div><section class="role"><div class="role-head"><strong>🎯 Team progress</strong><div class="role-balance">${percent.toFixed(1)}%</div></div><div class="progress"><i style="width:${percent}%"></i></div><div class="rows">${row('Current Value',money(data.circle.current)+' USDT')}${row('Target',data.circle.target_set?money(data.circle.target)+' USDT':'Not set')}${row('Remaining',data.circle.target_set?money(data.circle.remaining)+' USDT':'—')}${row('Period',data.cycle_label)}</div></section>`}else{document.getElementById('circle').innerHTML='<div class="section">Circle</div><div class="empty">🔒 Circle 1 progress is private.</div>'}withdraw.classList.toggle('hidden',!data.can_withdraw);loading.classList.add('hidden');content.classList.remove('hidden')}catch(e){loading.classList.add('hidden');error.textContent=e.message;error.classList.remove('hidden')}}document.getElementById('refresh').addEventListener('click',load);withdraw.addEventListener('click',()=>{withdraw.disabled=true;withdraw.textContent='Opening withdrawal…';tg.sendData(JSON.stringify({type:'wallet_withdrawal'}));setTimeout(()=>tg.close(),220)});load();
 </script><script>
-async function loadTargetPlan(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);const response=await fetch('/api/wallet',{method:'POST',body:form}),data=await response.json();if(!response.ok||!data.next_circle){document.getElementById('targetPlan').innerHTML='';return}document.getElementById('targetPlan').innerHTML=`<div class="section">Next Circle plan</div><section class="role"><div class="role-head"><strong>🎯 Personal Target</strong><div class="role-balance">${money(data.next_circle.personal_target)} USDT</div></div><div class="rows">${row('Next Circle',data.next_circle.label)}${row('Combined team target',money(data.next_circle.combined_target)+' USDT')}${row('Swappers joined',String(data.next_circle.contributors))}</div><div class="target-entry"><input id="personalTarget" type="number" min="0.01" max="10000000" step="0.01" inputmode="decimal" placeholder="Your target in USDT" value="${Number(data.next_circle.personal_target)>0?data.next_circle.personal_target:''}"><button id="saveTarget" type="button" onclick="savePersonalTarget()">${Number(data.next_circle.personal_target)>0?'✏️ Update':'➕ Add'} Target</button></div><div id="targetNote" class="target-note">Your target will count toward the next Circle team target.</div></section>`}catch(e){document.getElementById('targetPlan').innerHTML=''}}async function savePersonalTarget(){const input=document.getElementById('personalTarget'),button=document.getElementById('saveTarget'),note=document.getElementById('targetNote'),amount=input?.value.trim();if(!amount||Number(amount)<=0){note.textContent='Enter a positive target amount.';return}button.disabled=true;button.textContent='Saving…';note.textContent='';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);form.append('amount',amount);const response=await fetch('/api/wallet/personal-target',{method:'POST',body:form}),result=await response.json();if(!response.ok)throw new Error(result.error||'Could not save target');note.textContent=`✅ Saved. Combined next Circle target: ${money(result.combined_target)} USDT`;tg.HapticFeedback?.notificationOccurred('success');setTimeout(loadTargetPlan,650)}catch(e){note.textContent=e.message;button.disabled=false;button.textContent='🎯 Save Target'}}document.getElementById('refresh').addEventListener('click',loadTargetPlan);setTimeout(loadTargetPlan,250);
+async function loadTargetPlan(){try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);const response=await fetch('/api/wallet',{method:'POST',body:form}),data=await response.json();if(!response.ok||!data.next_circle){document.getElementById('targetPlan').innerHTML='';return}document.getElementById('targetPlan').innerHTML=`<div class="section">Current Circle plan</div><section class="role"><div class="role-head"><strong>🎯 Personal Target</strong><div class="role-balance">${money(data.next_circle.personal_target)} USDT</div></div><div class="rows">${row('Current Circle',data.next_circle.label)}${row('Combined team target',money(data.next_circle.combined_target)+' USDT')}${row('Swappers joined',String(data.next_circle.contributors))}</div><div class="target-entry"><input id="personalTarget" type="number" min="0.01" max="10000000" step="0.01" inputmode="decimal" placeholder="Your target in USDT" value="${Number(data.next_circle.personal_target)>0?data.next_circle.personal_target:''}"><button id="saveTarget" type="button" onclick="savePersonalTarget()">${Number(data.next_circle.personal_target)>0?'✏️ Update':'➕ Add'} Target</button></div><div id="targetNote" class="target-note">Your target counts toward the current Circle team target immediately.</div></section>`}catch(e){document.getElementById('targetPlan').innerHTML=''}}async function savePersonalTarget(){const input=document.getElementById('personalTarget'),button=document.getElementById('saveTarget'),note=document.getElementById('targetNote'),amount=input?.value.trim();if(!amount||Number(amount)<=0){note.textContent='Enter a positive target amount.';return}button.disabled=true;button.textContent='Saving…';note.textContent='';try{const form=new FormData();form.append('init_data',tg.initData);form.append('access_token',token);form.append('amount',amount);const response=await fetch('/api/wallet/personal-target',{method:'POST',body:form}),result=await response.json();if(!response.ok)throw new Error(result.error||'Could not save target');note.textContent=`✅ Saved. Combined current Circle target: ${money(result.combined_target)} USDT`;tg.HapticFeedback?.notificationOccurred('success');setTimeout(loadTargetPlan,650)}catch(e){note.textContent=e.message;button.disabled=false;button.textContent='🎯 Save Target'}}document.getElementById('refresh').addEventListener('click',loadTargetPlan);setTimeout(loadTargetPlan,250);
 </script></body></html>""", 200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}
 
 
@@ -5705,14 +5772,14 @@ def wallet_api():
             target, target_contributors, target_source = get_cycle_team_target(
                 cur, cycle_start, cycle_end
             )
-            next_cycle_start, next_cycle_end = next_date_creator_cycle_bounds()
+            target_cycle_start, target_cycle_end = cycle_start, cycle_end
             cur.execute(
                 """
                 SELECT target_amount
                 FROM cycle_personal_targets
                 WHERE telegram_id=%s AND target_cycle_start=%s
                 """,
-                (user_id, next_cycle_start),
+                (user_id, target_cycle_start),
             )
             personal_target_row = cur.fetchone()
             cur.execute(
@@ -5721,7 +5788,7 @@ def wallet_api():
                 FROM cycle_personal_targets
                 WHERE target_cycle_start=%s AND target_cycle_end=%s
                 """,
-                (next_cycle_start, next_cycle_end),
+                (target_cycle_start, target_cycle_end),
             )
             next_combined_target, next_target_contributors = cur.fetchone()
         finally:
@@ -5791,8 +5858,8 @@ def wallet_api():
             next_circle=(
                 {
                     "label": (
-                        f"{next_cycle_start.strftime('%d %b')} → "
-                        f"{next_cycle_end.strftime('%d %b %Y')}"
+                        f"{target_cycle_start.strftime('%d %b')} → "
+                        f"{target_cycle_end.strftime('%d %b %Y')}"
                     ),
                     "personal_target": format_money(personal_target),
                     "combined_target": format_money(next_combined_target),
@@ -5835,7 +5902,7 @@ def wallet_personal_target_api():
             raise ValueError("Enter a valid personal target")
         if amount <= 0 or amount > Decimal("10000000"):
             raise ValueError("Personal target must be between 0.01 and 10,000,000 USDT")
-        next_cycle_start, next_cycle_end = next_date_creator_cycle_bounds()
+        target_cycle_start, target_cycle_end = date_creator_cycle_bounds()
         conn = get_conn()
         cur = conn.cursor()
         try:
@@ -5856,7 +5923,7 @@ def wallet_personal_target_api():
                 WHERE telegram_id=%s AND target_cycle_start=%s
                 FOR UPDATE
                 """,
-                (user_id, next_cycle_start),
+                (user_id, target_cycle_start),
             )
             previous = cur.fetchone()
             old_amount = previous[0] if previous else None
@@ -5871,7 +5938,7 @@ def wallet_personal_target_api():
                     target_amount=EXCLUDED.target_amount,
                     updated_at=NOW()
                 """,
-                (user_id, next_cycle_start, next_cycle_end, amount),
+                (user_id, target_cycle_start, target_cycle_end, amount),
             )
             add_audit(
                 cur,
@@ -5883,10 +5950,10 @@ def wallet_personal_target_api():
                 ),
                 "SET_PERSONAL_TARGET",
                 "cycle_personal_target",
-                f"{user_id}:{next_cycle_start.date().isoformat()}",
+                f"{user_id}:{target_cycle_start.date().isoformat()}",
                 old_amount,
                 amount,
-                "Target contributes to the next Circle team target",
+                "Target contributes to the current Circle team target",
             )
             cur.execute(
                 """
@@ -5894,7 +5961,7 @@ def wallet_personal_target_api():
                 FROM cycle_personal_targets
                 WHERE target_cycle_start=%s AND target_cycle_end=%s
                 """,
-                (next_cycle_start, next_cycle_end),
+                (target_cycle_start, target_cycle_end),
             )
             combined, contributors = cur.fetchone()
             conn.commit()
@@ -5908,7 +5975,7 @@ def wallet_personal_target_api():
             f"🎯 Personal target updated\n"
             f"Swapper: {user_id}\n"
             f"Personal target: {format_money(amount)} USDT\n"
-            f"Next Circle team target: {format_money(combined)} USDT\n"
+            f"Current Circle team target: {format_money(combined)} USDT\n"
             f"Contributors: {int(contributors or 0)}"
         )
         return jsonify(
@@ -5916,8 +5983,8 @@ def wallet_personal_target_api():
             combined_target=format_money(combined),
             contributors=int(contributors or 0),
             next_circle=(
-                f"{next_cycle_start.strftime('%d %b')} → "
-                f"{next_cycle_end.strftime('%d %b %Y')}"
+                f"{target_cycle_start.strftime('%d %b')} → "
+                f"{target_cycle_end.strftime('%d %b %Y')}"
             ),
         )
     except ValueError as error:
@@ -7726,6 +7793,17 @@ Please check the chat and update the status — this lead is starting to feel fo
 
 
 ensure_balance_schema()
+try:
+    migrated_targets = migrate_recent_targets_to_current_cycle_once()
+    if migrated_targets:
+        log("PERSONAL TARGETS MOVED TO CURRENT CIRCLE", migrated_targets)
+        notify_admin(
+            f"✅ {migrated_targets} personal target(s) moved to the current Circle. "
+            "The combined team target was recalculated."
+        )
+except Exception as e:
+    log("PERSONAL TARGET CURRENT CIRCLE MIGRATION ERROR", repr(e))
+    notify_admin(f"❌ PERSONAL TARGET MIGRATION ERROR: {repr(e)}")
 try:
     bootstrap_notified_cycle_participants()
 except Exception as e:
